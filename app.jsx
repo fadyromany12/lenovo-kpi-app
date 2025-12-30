@@ -651,7 +651,7 @@ const LoginScreen = () => {
               <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-white transition-colors" size={18}/>
               <input 
                 value={email} onChange={e=>setEmail(e.target.value)} 
-                placeholder="user@lenovo.com"
+                placeholder="firstname.lastname@Konecta.com"
                 className="w-full bg-black/40 border border-white/10 rounded-lg py-3 pl-12 text-sm text-white focus:border-[#E2231A] focus:bg-black/60 outline-none transition-all"
               />
             </div>
