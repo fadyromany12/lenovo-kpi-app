@@ -369,22 +369,19 @@ const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const { showToast } = useContext(ToastContext);
 
-  // --- FIX START: Safety Timeout ---
-  // If the database takes longer than 5 seconds, force the app to load.
+  // Safety Timeout
   useEffect(() => {
     const timer = setTimeout(() => {
       if (loading) {
-        console.warn("System hung on initialization. Forcing load...");
+        console.warn("System hung. Forcing load...");
         setLoading(false);
       }
-    }, 5000); // 5 seconds timeout
+    }, 5000);
     return () => clearTimeout(timer);
   }, [loading]);
-  // --- FIX END ---
 
   useEffect(() => {
-    if (configError) return; // Don't try auth if config failed
-
+    if (configError) return;
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -394,7 +391,7 @@ const AuthProvider = ({ children }) => {
         }
       } catch (err) {
         console.error("Auth Init Failed:", err);
-        setLoading(false); // Stop loading so we can show error screen
+        setLoading(false);
       }
     };
     initAuth();
@@ -409,7 +406,7 @@ const AuthProvider = ({ children }) => {
     if (!emailToQuery) { setLoading(false); return; }
 
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('email', '==', emailToQuery));
-    // FIX: Added error handler to prevent infinite loading if DB fails
+    
     const unsubscribe = onSnapshot(q, 
       (snap) => {
         if (!snap.empty) {
@@ -422,17 +419,15 @@ const AuthProvider = ({ children }) => {
         }
         setLoading(false);
       },
-      (error) => {
-        console.error("Database Connection Error:", error);
-        // Ensure we stop loading even if there is an error
+      (err) => {
+        console.error("DB Error:", err);
         setLoading(false);
-        localStorage.removeItem('lenovo_user_email');
       }
     );
     return () => unsubscribe();
   }, [user]);
 
-const login = async (email, role, secret) => {
+  const login = async (email, role, secret) => {
     setLoading(true);
     if (role === 'super_user' && secret !== ADMIN_SECRET) {
       showToast("Access Denied: Invalid Secret", "error");
@@ -456,21 +451,35 @@ const login = async (email, role, secret) => {
            finalProfile.role = 'super_user';
         }
       } else {
-        // New user: create their data
+        // --- NEW USER REGISTRATION ---
         const name = parseNameFromEmail(email);
-        const finalRole = role; // Manager role is granted immediately per your logic
         
+        // FIX: If requesting Manager, create as Agent first and send request
+        let initialRole = role;
+        if (role === 'manager') {
+           initialRole = 'agent'; // Downgrade until approved
+        }
+
         const newRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'users'));
-        const newData = { name, email, role: finalRole, joinedAt: serverTimestamp(), groupId: null };
-        
+        const newData = { name, email, role: initialRole, joinedAt: serverTimestamp(), groupId: null };
         await setDoc(newRef, newData);
+        
+        // If they wanted to be a manager, create a request
+        if (role === 'manager') {
+           await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'manager_requests'), {
+             userId: newRef.id, name, email, status: 'pending', requestedAt: serverTimestamp()
+           });
+           showToast("Account created. Manager access pending approval.");
+        } else {
+           showToast(`Welcome, ${name}`);
+        }
+
         finalProfile = { id: newRef.id, ...newData };
       }
 
-      // FIX: Manually update the state so the app knows we are done loading
       localStorage.setItem('lenovo_user_email', email);
       setProfile(finalProfile);
-      setLoading(false); // <--- This line unblocks the "Initializing" screen
+      setLoading(false); 
 
     } catch (err) {
       console.error("Login Error:", err);
@@ -532,6 +541,7 @@ const MainLayout = () => {
           {view === 'create_team' && <CreateTeamView setView={setView} />}
           {view === 'team_dash' && <TeamDashboard />}
           {view === 'learning_hub' && <LearningHub />}
+          {view === 'user_mgmt' && <UserManagement />}
         </main>
       </div>
     </DataContextWrapper>
@@ -825,14 +835,32 @@ const LobbyView = ({ setView, embed = false }) => {
 const CreateTeamView = ({ setView }) => {
   const { profile } = useContext(AuthContext);
   const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false); // Added loading state
+
   const handleCreate = async () => {
     if (!name) return;
-    const ref = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'groups'), {
-      name, managerId: profile.id, kpis: DEFAULT_KPIS, awards: DEFAULT_AWARDS, createdAt: serverTimestamp()
-    });
-    if (profile.role === 'manager') await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', profile.id), { groupId: ref.id });
-    setView('team_dash');
+    setLoading(true); // Start loading
+    try {
+      const ref = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'groups'), {
+        name, managerId: profile.id, kpis: DEFAULT_KPIS, awards: DEFAULT_AWARDS, createdAt: serverTimestamp()
+      });
+      
+      if (profile.role === 'manager') {
+         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', profile.id), { groupId: ref.id });
+      }
+      
+      // Force a short delay to ensure DB propagation before switching
+      setTimeout(() => {
+        setLoading(false);
+        setView('team_dash');
+      }, 1000);
+
+    } catch (e) {
+      console.error(e);
+      setLoading(false);
+    }
   };
+
   return (
     <div className="flex justify-center py-20 animate-slide-up">
       <Card title="Establish New Team" className="max-w-md w-full">
@@ -840,7 +868,9 @@ const CreateTeamView = ({ setView }) => {
           <Input label="Team Identity" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Alpha Squad" autoFocus />
           <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
              <Button variant="ghost" onClick={()=>setView('lobby')}>Abort</Button>
-             <Button onClick={handleCreate}>Initialize Team</Button>
+             <Button onClick={handleCreate} disabled={loading}>
+               {loading ? <Loader className="animate-spin" size={16}/> : "Initialize Team"}
+             </Button>
           </div>
         </div>
       </Card>
@@ -1544,61 +1574,27 @@ const KpiConfigurator = ({ currentTeam }) => {
   const { showToast } = useContext(ToastContext);
   const [loading, setLoading] = useState(false);
   
-  // Initialize state with existing data or defaults
   const [kpis, setKpis] = useState(currentTeam?.kpis || []);
   const [gateways, setGateways] = useState(currentTeam?.gateways || []);
 
-  // --- KPI HANDLERS ---
-  const addKpi = () => {
-    setKpis([...kpis, { 
-      id: `kpi_${Date.now()}`, 
-      name: '', 
-      weight: 10, 
-      target: 100, 
-      direction: 'higher', 
-      type: 'value' // 'value' or 'binary'
-    }]);
-  };
-
-  const updateKpi = (id, field, value) => {
-    setKpis(kpis.map(k => k.id === id ? { ...k, [field]: value } : k));
-  };
-
+  const addKpi = () => setKpis([...kpis, { id: `kpi_${Date.now()}`, name: '', weight: 10, target: 100, direction: 'higher', type: 'value' }]);
+  const updateKpi = (id, field, value) => setKpis(kpis.map(k => k.id === id ? { ...k, [field]: value } : k));
   const removeKpi = (id) => setKpis(kpis.filter(k => k.id !== id));
 
-  // --- GATEWAY HANDLERS ---
-  const addGateway = () => {
-    setGateways([...gateways, { 
-      id: `gate_${Date.now()}`, 
-      name: '', 
-      penalty: 'zero', // 'zero' or 'deduct'
-      weight: 0 // Only used if deduct
-    }]);
-  };
-
-  const updateGateway = (id, field, value) => {
-    setGateways(gateways.map(g => g.id === id ? { ...g, [field]: value } : g));
-  };
-
+  const addGateway = () => setGateways([...gateways, { id: `gate_${Date.now()}`, name: '', penalty: 'zero', weight: 0 }]);
+  const updateGateway = (id, field, value) => setGateways(gateways.map(g => g.id === id ? { ...g, [field]: value } : g));
   const removeGateway = (id) => setGateways(gateways.filter(g => g.id !== id));
 
-  // --- SAVE ---
   const handleSave = async () => {
     setLoading(true);
     try {
-      // Validate Weights
       const totalWeight = kpis.reduce((sum, k) => sum + parseFloat(k.weight || 0), 0);
-      if (totalWeight !== 100) {
-        showToast(`Warning: Total Weight is ${totalWeight}% (Should be 100%)`, 'error');
-        // We allow saving but warn the user
-      }
+      if (totalWeight !== 100) showToast(`Warning: Total Weight is ${totalWeight}%`, 'error');
 
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', currentTeam.id), {
-        kpis,
-        gateways,
-        lastUpdated: serverTimestamp()
+        kpis, gateways, lastUpdated: serverTimestamp()
       });
-      showToast("Configuration Saved Successfully");
+      showToast("Configuration Saved");
     } catch (err) {
       console.error(err);
       showToast("Save Failed", 'error');
@@ -1608,163 +1604,82 @@ const KpiConfigurator = ({ currentTeam }) => {
 
   return (
     <div className="space-y-8 animate-slide-up pb-10">
-      
-      {/* HEADER */}
       <div className="flex justify-between items-end border-b border-white/10 pb-4">
         <div>
-           <h3 className="text-xl font-black text-white uppercase tracking-tight">System Configuration</h3>
-           <p className="text-zinc-500 text-xs mt-1">Define success metrics and global failure rules.</p>
+           <h3 className="text-xl font-black text-white uppercase tracking-tight">System Config</h3>
+           <p className="text-zinc-500 text-xs mt-1">Define metrics & rules.</p>
         </div>
         <Button onClick={handleSave} disabled={loading} className={loading ? "opacity-50" : ""}>
           {loading ? <Loader className="animate-spin" size={16}/> : <Save size={16}/>}
-          Save Changes
+          Save
         </Button>
       </div>
 
-      {/* SECTION 1: GLOBAL GATEWAYS */}
+      {/* GATEWAYS */}
       <div className="space-y-4">
         <div className="flex justify-between items-center">
-          <div className="text-xs font-bold text-[#E2231A] uppercase tracking-widest flex items-center gap-2">
-            <Shield size={14}/> Global Gateways
-          </div>
-          <button onClick={addGateway} className="text-xs text-zinc-400 hover:text-white flex items-center gap-1 transition-colors">
-            <Plus size={12}/> Add Rule
-          </button>
+          <div className="text-xs font-bold text-[#E2231A] uppercase tracking-widest flex items-center gap-2"><Shield size={14}/> Global Gateways</div>
+          <button onClick={addGateway} className="text-xs text-zinc-400 hover:text-white flex items-center gap-1"><Plus size={12}/> Add Rule</button>
         </div>
-
-        {gateways.length === 0 && <div className="text-zinc-600 text-xs italic border border-dashed border-white/10 p-4 rounded text-center">No global failure rules defined.</div>}
-
+        {gateways.length === 0 && <div className="text-zinc-600 text-xs italic border border-dashed border-white/10 p-4 rounded text-center">No rules defined.</div>}
         {gateways.map((g) => (
-          <div key={g.id} className="kpi-card-styled border-l-4 border-l-[#E2231A] flex gap-4 items-end">
-            <div className="flex-1 space-y-2">
-              <div className="kpi-input-group">
-                <label>Gateway Rule Name</label>
-                <input 
-                  className="kpi-input-styled" 
-                  placeholder="e.g. Zero Tolerance Policy"
-                  value={g.name} 
-                  onChange={e => updateGateway(g.id, 'name', e.target.value)} 
-                />
-              </div>
+          <div key={g.id} className="kpi-card-styled border-l-4 border-l-[#E2231A] flex flex-col md:flex-row gap-4 items-end">
+            <div className="w-full space-y-2">
+              <div className="kpi-input-group"><label>Gateway Name</label><input className="kpi-input-styled" value={g.name} onChange={e => updateGateway(g.id, 'name', e.target.value)} /></div>
             </div>
-            
-            <div className="w-40 space-y-2">
-              <div className="kpi-input-group">
-                <label>Penalty Impact</label>
-                <select 
-                  className="kpi-select-styled" 
-                  value={g.penalty} 
-                  onChange={e => updateGateway(g.id, 'penalty', e.target.value)}
-                >
-                  <option value="zero">Zero Out Score (0%)</option>
-                  <option value="deduct">Deduct Points</option>
-                </select>
-              </div>
+            <div className="w-full md:w-48 space-y-2">
+              <div className="kpi-input-group"><label>Penalty</label><select className="kpi-select-styled" value={g.penalty} onChange={e => updateGateway(g.id, 'penalty', e.target.value)}><option value="zero">Zero Out Score</option><option value="deduct">Deduct Points</option></select></div>
             </div>
-
             {g.penalty === 'deduct' && (
-              <div className="w-24 space-y-2 animate-fade-in">
-                <div className="kpi-input-group">
-                  <label>Ded. %</label>
-                  <input 
-                    type="number" 
-                    className="kpi-input-styled text-center text-red-500 font-bold" 
-                    value={g.weight} 
-                    onChange={e => updateGateway(g.id, 'weight', e.target.value)} 
-                  />
-                </div>
-              </div>
+              <div className="w-24 space-y-2"><div className="kpi-input-group"><label>Ded. %</label><input type="number" className="kpi-input-styled text-center text-red-500 font-bold" value={g.weight} onChange={e => updateGateway(g.id, 'weight', e.target.value)} /></div></div>
             )}
-
             <button onClick={() => removeGateway(g.id)} className="btn-icon-danger mb-1"><Trash2 size={16}/></button>
           </div>
         ))}
       </div>
 
-      {/* SECTION 2: KPIS */}
+      {/* KPIS - FIXED LAYOUT */}
       <div className="space-y-4">
         <div className="flex justify-between items-center">
-           <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-            <Target size={14}/> Performance Metrics (KPIs)
-          </div>
-          <button onClick={addKpi} className="text-xs text-[#E2231A] hover:text-white flex items-center gap-1 transition-colors font-bold">
-            <Plus size={12}/> Add KPI
-          </button>
+           <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2"><Target size={14}/> Performance Metrics</div>
+           <button onClick={addKpi} className="text-xs text-[#E2231A] hover:text-white flex items-center gap-1 font-bold"><Plus size={12}/> Add KPI</button>
         </div>
 
         {kpis.map((k) => (
           <div key={k.id} className="kpi-card-styled">
-            <div className="config-grid">
-              
-              {/* Row 1: Basics */}
-              <div className="col-span-2 kpi-input-group">
-                <label>Metric Name</label>
-                <input 
-                  className="kpi-input-styled font-bold" 
-                  value={k.name} 
-                  onChange={e => updateKpi(k.id, 'name', e.target.value)} 
-                />
-              </div>
-              
+            {/* Header Row: Name and Delete Button - Prevents Overlap */}
+            <div className="flex gap-4 items-start mb-4 border-b border-white/5 pb-4">
+               <div className="flex-1 kpi-input-group">
+                  <label>Metric Name</label>
+                  <input className="kpi-input-styled font-bold text-lg" value={k.name} onChange={e => updateKpi(k.id, 'name', e.target.value)} placeholder="KPI Name" />
+               </div>
+               <button onClick={() => removeKpi(k.id)} className="btn-icon-danger mt-1"><Trash2 size={16}/></button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="kpi-input-group">
                 <label>Type</label>
-                <select 
-                  className="kpi-select-styled" 
-                  value={k.type || 'value'} 
-                  onChange={e => updateKpi(k.id, 'type', e.target.value)}
-                >
+                <select className="kpi-select-styled" value={k.type || 'value'} onChange={e => updateKpi(k.id, 'type', e.target.value)}>
                   <option value="value">Numeric Target</option>
                   <option value="binary">Pass / Fail</option>
                 </select>
               </div>
-
-              {/* Row 2: Logic (Changes based on Type) */}
               <div className="kpi-input-group">
                 <label>Weight (%)</label>
-                <input 
-                  type="number" 
-                  className="kpi-input-styled text-[#E2231A] font-bold" 
-                  value={k.weight} 
-                  onChange={e => updateKpi(k.id, 'weight', e.target.value)} 
-                />
+                <input type="number" className="kpi-input-styled text-[#E2231A] font-bold" value={k.weight} onChange={e => updateKpi(k.id, 'weight', e.target.value)} />
               </div>
 
               {k.type !== 'binary' ? (
                 <>
-                  <div className="kpi-input-group">
-                    <label>Target Value</label>
-                    <input 
-                      type="number" 
-                      className="kpi-input-styled" 
-                      value={k.target} 
-                      onChange={e => updateKpi(k.id, 'target', e.target.value)} 
-                    />
-                  </div>
-                  <div className="kpi-input-group">
-                    <label>Direction</label>
-                    <select 
-                      className="kpi-select-styled" 
-                      value={k.direction} 
-                      onChange={e => updateKpi(k.id, 'direction', e.target.value)}
-                    >
-                      <option value="higher">Higher is Better</option>
-                      <option value="lower">Lower is Better</option>
-                    </select>
-                  </div>
+                  <div className="kpi-input-group"><label>Target</label><input type="number" className="kpi-input-styled" value={k.target} onChange={e => updateKpi(k.id, 'target', e.target.value)} /></div>
+                  <div className="kpi-input-group"><label>Direction</label><select className="kpi-select-styled" value={k.direction} onChange={e => updateKpi(k.id, 'direction', e.target.value)}><option value="higher">Higher is Better</option><option value="lower">Lower is Better</option></select></div>
                 </>
               ) : (
-                 <div className="col-span-2 flex items-center pt-6 px-4 bg-white/5 rounded-lg border border-dashed border-white/10">
-                    <span className="text-xs text-zinc-500 italic">Pass = 100% of Weight. Fail = 0%.</span>
+                 <div className="col-span-2 flex items-center justify-center bg-white/5 rounded border border-dashed border-white/10 text-[10px] text-zinc-500">
+                    Binary Logic Active
                  </div>
               )}
             </div>
-
-            <button 
-              onClick={() => removeKpi(k.id)} 
-              className="absolute top-4 right-4 text-zinc-600 hover:text-red-500 transition-colors"
-            >
-              <Trash2 size={16}/>
-            </button>
           </div>
         ))}
       </div>
@@ -1840,8 +1755,7 @@ const LearningHub = () => {
   const [newPost, setNewPost] = useState({ title: '', content: '', tag: 'General' });
 
   useEffect(() => {
-    // Fix: Removed unused 'q' variable that caused the crash. 
-    // We are sorting client-side (.sort) so we don't need the index or orderBy right now.
+    // Corrected fetch without invalid orderBy
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
     return onSnapshot(ref, (snap) => {
       setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
@@ -1851,11 +1765,7 @@ const LearningHub = () => {
   const handleCreate = async () => {
     if (!newPost.title || !newPost.content) return;
     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
-      ...newPost,
-      authorName: profile.name,
-      authorId: profile.id,
-      createdAt: serverTimestamp(),
-      likes: []
+      ...newPost, authorName: profile.name, authorId: profile.id, createdAt: serverTimestamp(), likes: []
     });
     setIsCreating(false);
     setNewPost({ title: '', content: '', tag: 'General' });
@@ -1863,15 +1773,14 @@ const LearningHub = () => {
   };
 
   const toggleLike = async (postId, currentLikes = []) => {
-    const likes = currentLikes.includes(profile.id) 
-      ? currentLikes.filter(id => id !== profile.id)
-      : [...currentLikes, profile.id];
+    const likes = currentLikes.includes(profile.id) ? currentLikes.filter(id => id !== profile.id) : [...currentLikes, profile.id];
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', postId), { likes });
   };
 
   return (
     <div className="space-y-8 animate-slide-up max-w-4xl mx-auto">
-      <div className="flex justify-between items-end border-b border-white/10 pb-6">
+      {/* UI FIX: Added flex-wrap and gap to prevent overlapping */}
+      <div className="flex flex-wrap justify-between items-end border-b border-white/10 pb-6 gap-4">
         <div>
           <h2 className="text-4xl font-black uppercase text-white tracking-tighter">Learning <span className="text-[#E2231A]">Hub</span></h2>
           <p className="text-zinc-500 mt-1 flex items-center gap-2"><BookOpen size={14}/> Share Best Practices & Intel</p>
@@ -1882,19 +1791,15 @@ const LearningHub = () => {
       {isCreating && (
         <Card className="animate-fade-in border-[#E2231A]/50">
            <div className="space-y-4">
-             <Input label="Topic Title" value={newPost.title} onChange={e => setNewPost({...newPost, title: e.target.value})} placeholder="How to handle objection X..." />
+             <Input label="Topic Title" value={newPost.title} onChange={e => setNewPost({...newPost, title: e.target.value})} placeholder="Topic..." />
              <div className="space-y-2">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Knowledge Content</label>
                 <textarea 
                   className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-sm text-white focus:border-[#E2231A] outline-none min-h-[150px]" 
-                  placeholder="Type your insights here..."
-                  value={newPost.content}
-                  onChange={e => setNewPost({...newPost, content: e.target.value})}
+                  value={newPost.content} onChange={e => setNewPost({...newPost, content: e.target.value})}
                 />
              </div>
-             <div className="flex justify-end">
-               <Button onClick={handleCreate}><Send size={16}/> Publish</Button>
-             </div>
+             <div className="flex justify-end"><Button onClick={handleCreate}><Send size={16}/> Publish</Button></div>
            </div>
         </Card>
       )}
@@ -1911,29 +1816,136 @@ const LearningHub = () => {
                     <span>{new Date(post.createdAt?.seconds * 1000).toLocaleDateString()}</span>
                   </div>
                 </div>
-                <div className="bg-white/5 px-3 py-1 rounded-full text-[10px] font-bold uppercase text-zinc-400">
-                  {post.tag}
-                </div>
+                <div className="bg-white/5 px-3 py-1 rounded-full text-[10px] font-bold uppercase text-zinc-400">{post.tag}</div>
              </div>
-             <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-line mb-6 pl-4 border-l-2 border-[#E2231A]/30">
-               {post.content}
-             </p>
+             <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-line mb-6 pl-4 border-l-2 border-[#E2231A]/30">{post.content}</p>
              <div className="flex gap-4 border-t border-white/5 pt-4">
-                <button 
-                  onClick={() => toggleLike(post.id, post.likes)}
-                  className={cn(
-                    "flex items-center gap-2 text-xs font-bold transition-colors",
-                    post.likes?.includes(profile.id) ? "text-pink-500" : "text-zinc-500 hover:text-white"
-                  )}
-                >
-                  <Heart size={14} className={cn(post.likes?.includes(profile.id) && "fill-current")} /> 
-                  {post.likes?.length || 0} Kudos
+                <button onClick={() => toggleLike(post.id, post.likes)} className={cn("flex items-center gap-2 text-xs font-bold transition-colors", post.likes?.includes(profile.id) ? "text-pink-500" : "text-zinc-500 hover:text-white")}>
+                  <Heart size={14} className={cn(post.likes?.includes(profile.id) && "fill-current")} /> {post.likes?.length || 0} Kudos
                 </button>
              </div>
           </div>
         ))}
-        {posts.length === 0 && !isCreating && <div className="text-center py-20 text-zinc-600 italic">No knowledge shared yet. Be the first.</div>}
+        {posts.length === 0 && !isCreating && <div className="text-center py-20 text-zinc-600 italic">No knowledge shared yet.</div>}
       </div>
+    </div>
+  );
+};
+
+const UserManagement = () => {
+  const { teams } = useContext(DataContext);
+  const { showToast } = useContext(ToastContext);
+  const [allUsers, setAllUsers] = useState([]);
+  const [filter, setFilter] = useState('');
+
+  // Fetch real-time user list
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
+      setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => a.name.localeCompare(b.name)));
+    });
+    return () => unsub();
+  }, []);
+
+  const handleRoleChange = async (uid, newRole) => {
+     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid), { role: newRole });
+     showToast("User Role Updated");
+  };
+
+  const handleTeamChange = async (uid, newGroupId) => {
+     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid), { groupId: newGroupId || null });
+     showToast("Team Assignment Updated");
+  };
+
+  const handleDelete = async (uid) => {
+    if(!confirm("Permanently delete this user? This cannot be undone.")) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid));
+    showToast("User Deleted");
+  };
+
+  const filteredUsers = allUsers.filter(u => 
+    u.name?.toLowerCase().includes(filter.toLowerCase()) || 
+    u.email?.toLowerCase().includes(filter.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-6 animate-slide-up max-w-5xl mx-auto">
+       {/* Header */}
+       <div className="flex flex-col md:flex-row justify-between md:items-end border-b border-white/10 pb-6 gap-4">
+          <div>
+            <h2 className="text-4xl font-black uppercase text-white tracking-tighter">User <span className="text-[#E2231A]">Matrix</span></h2>
+            <p className="text-zinc-500 mt-1 flex items-center gap-2"><Settings size={14}/> Full Roster Control</p>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={14} />
+            <input 
+              className="bg-zinc-900 border border-white/10 rounded-full py-2 pl-9 pr-4 text-xs text-white focus:border-[#E2231A] outline-none w-full md:w-64 transition-all focus:w-80"
+              placeholder="Search personnel..."
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+            />
+          </div>
+       </div>
+
+       {/* User List */}
+       <div className="grid gap-3">
+         {filteredUsers.map(u => (
+           <div key={u.id} className="glass-panel p-4 rounded-xl flex flex-col md:flex-row items-center gap-4 hover:border-white/20 transition-all group">
+              
+              {/* Identity */}
+              <div className="flex items-center gap-4 flex-1 w-full">
+                 <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs shrink-0", 
+                    u.role === 'super_user' ? "bg-[#E2231A] text-white shadow-[0_0_15px_rgba(226,35,26,0.4)]" : 
+                    u.role === 'manager' ? "bg-purple-900/50 text-purple-200 border border-purple-500/30" : "bg-zinc-800 text-zinc-400"
+                 )}>
+                    {u.role === 'super_user' ? <Shield size={16}/> : u.role === 'manager' ? <Crown size={16}/> : <Users size={16}/>}
+                 </div>
+                 <div className="overflow-hidden">
+                   <div className="font-bold text-white truncate">{u.name}</div>
+                   <div className="text-xs text-zinc-500 truncate">{u.email}</div>
+                 </div>
+              </div>
+
+              {/* Controls */}
+              <div className="flex items-center gap-2 w-full md:w-auto">
+                 {/* Role Select */}
+                 <div className="relative">
+                   <select 
+                     className="appearance-none bg-black/40 border border-white/10 rounded-lg py-2 pl-3 pr-8 text-xs text-white outline-none focus:border-[#E2231A] cursor-pointer hover:bg-white/5 transition-colors uppercase font-bold w-32"
+                     value={u.role}
+                     onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                   >
+                     <option value="agent">Agent</option>
+                     <option value="manager">Manager</option>
+                     <option value="super_user">Super User</option>
+                   </select>
+                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-500"><Settings size={10}/></div>
+                 </div>
+
+                 {/* Team Select */}
+                 <div className="relative">
+                   <select 
+                     className="appearance-none bg-black/40 border border-white/10 rounded-lg py-2 pl-3 pr-8 text-xs text-white outline-none focus:border-[#E2231A] cursor-pointer hover:bg-white/5 transition-colors w-40 truncate"
+                     value={u.groupId || ''}
+                     onChange={(e) => handleTeamChange(u.id, e.target.value)}
+                   >
+                     <option value="">(Free Agent)</option>
+                     {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                   </select>
+                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-500"><Users size={10}/></div>
+                 </div>
+
+                 <button 
+                   onClick={() => handleDelete(u.id)} 
+                   className="p-2 hover:bg-red-500/20 text-zinc-600 hover:text-red-500 rounded-lg transition-colors ml-2"
+                   title="Delete User"
+                 >
+                   <Trash2 size={16}/>
+                 </button>
+              </div>
+           </div>
+         ))}
+         {filteredUsers.length === 0 && <div className="text-center py-10 text-zinc-600 italic">No personnel found.</div>}
+       </div>
     </div>
   );
 };
@@ -1954,10 +1966,18 @@ const Navbar = ({ view, setView }) => {
               <NavBtn active={view === 'lobby'} onClick={()=>setView('lobby')} icon={LayoutGrid} label="Lobby" />
               <NavBtn active={view === 'learning_hub'} onClick={()=>setView('learning_hub')} icon={BookOpen} label="Learning" />
               
-              {profile.role === 'super_user' && <NavBtn active={view === 'admin_dash'} onClick={()=>setView('admin_dash')} icon={Shield} label="Admin" />}
+              {/* Only Super User sees Admin & User Matrix */}
+              {profile.role === 'super_user' && (
+                <>
+                  <NavBtn active={view === 'admin_dash'} onClick={()=>setView('admin_dash')} icon={Shield} label="Admin" />
+                  <NavBtn active={view === 'user_mgmt'} onClick={()=>setView('user_mgmt')} icon={Settings} label="Users" />
+                </>
+              )}
+              
               {profile.groupId && <NavBtn active={view === 'team_dash'} onClick={()=>setView('team_dash')} icon={Users} label="My Team" />}
            </div>
         </div>
+        {/* ... User profile section ... */}
         <div className="flex items-center gap-6">
            <div className="text-right hidden md:block">
              <div className="text-sm font-bold text-white">{profile.name}</div>
