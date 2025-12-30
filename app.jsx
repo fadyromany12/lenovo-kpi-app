@@ -696,43 +696,59 @@ const CreateTeamView = ({ setView }) => {
 };
 
 const TrendChart = ({ data, kpis }) => {
-  if (!data || data.length === 0) return null;
+  // Always render the Card to maintain layout size
+  const hasData = data && data.length > 0;
   
-  // Calculate team average per month
-  const chartData = data.map(month => {
+  // Calculate team average per month if data exists
+  const chartData = hasData ? data.map(month => {
     const scores = Object.values(month.stats).map(s => s.totalScore);
     const avg = scores.reduce((a, b) => a + b, 0) / (scores.length || 1);
     return { label: month.id, value: avg };
-  }).sort((a, b) => a.label.localeCompare(b.label)); // Sort by date
+  }).sort((a, b) => a.label.localeCompare(b.label)) : [];
 
-  const maxVal = 150; // Max score cap
-  const height = 200;
-  
+  const maxVal = 150; 
+
   return (
-    <Card title="Historical Velocity" icon={TrendingUp} className="h-full">
+    <Card 
+      title="Historical Velocity" 
+      icon={TrendingUp} 
+      className="h-full min-h-[300px]" // Added min-height
+      action={<InfoTooltip text="Visualizes team performance trends over archived months." />}
+    >
       <div className="flex items-end justify-between h-[200px] gap-2 pt-8 pb-2 px-4">
-        {chartData.map((d, i) => (
-          <div key={i} className="flex-1 flex flex-col justify-end items-center group relative">
-             {/* Tooltip */}
+        {hasData ? chartData.map((d, i) => (
+          <div key={i} className="flex-1 flex flex-col justify-end items-center group relative animate-slide-up">
              <div className="absolute -top-8 bg-zinc-800 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 border border-white/10">
                {d.label}: {d.value.toFixed(1)}%
              </div>
-             {/* Bar */}
              <div 
                className="w-full max-w-[40px] bg-gradient-to-t from-[#E2231A]/20 to-[#E2231A] rounded-t-sm transition-all duration-1000 relative overflow-hidden"
                style={{ height: `${(d.value / maxVal) * 100}%` }}
              >
                <div className="absolute top-0 left-0 w-full h-[2px] bg-white/50"></div>
              </div>
-             {/* Label */}
              <div className="mt-2 text-[10px] text-zinc-500 font-bold uppercase rotate-0 truncate w-full text-center">{d.label}</div>
           </div>
-        ))}
-        {chartData.length === 0 && <div className="w-full text-center text-zinc-600 text-xs">No history archived yet.</div>}
+        )) : (
+          <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-2 border-2 border-dashed border-white/5 rounded-xl">
+            <BarChart3 size={24} className="opacity-20"/>
+            <span className="text-xs font-bold uppercase tracking-widest opacity-50">No History Archived</span>
+          </div>
+        )}
       </div>
     </Card>
   );
 };
+
+const InfoTooltip = ({ text }) => (
+  <div className="relative group inline-block ml-2 translate-y-0.5 z-10">
+    <Info size={14} className="text-zinc-500 hover:text-[#E2231A] cursor-help transition-colors" />
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-zinc-900 border border-white/10 p-2 rounded text-[10px] text-zinc-300 shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
+      {text}
+      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-r border-b border-white/10 rotate-45"></div>
+    </div>
+  </div>
+);
 
 const TeamDashboard = () => {
   const { activeTeamId, members, performance, teams } = useContext(DataContext);
@@ -980,7 +996,6 @@ const generateAgentReport = (agent, kpis, kpiResults, totalScore, awards, teamNa
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList }) => {
   const { showToast } = useContext(ToastContext);
 
-  // 1. Group KPIs by Category
   const kpiStructure = useMemo(() => {
     const groups = {};
     kpis.forEach(k => {
@@ -988,7 +1003,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
       if (!groups[cat]) groups[cat] = [];
       groups[cat].push(k);
     });
-    return Object.entries(groups); // [['Core', [kpi1, kpi2]], ['Adherence', [kpi3, kpi4]]]
+    return Object.entries(groups); 
   }, [kpis]);
 
   const rows = useMemo(() => {
@@ -998,7 +1013,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        // PASS GATES TO CALCULATOR
         const weighted = calculateScore(val, k.target, k.direction, k.weight, k.gates);
         totalScore += weighted;
         return { ...k, val, weighted };
@@ -1055,18 +1069,25 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
   };
 
   return (
-    <Card title="Performance Matrix" icon={Activity} 
-      action={isManager && (
-        <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-4 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
-          <Upload size={14} /> Import CSV
-          <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
-        </label>
-      )}
+    <Card 
+      title="Performance Matrix" 
+      icon={Activity} 
+      className="min-h-[500px]" // FIXED: Added min-height for better default size
+      action={
+        <div className="flex items-center gap-3">
+          <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
+          {isManager && (
+            <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-4 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
+              <Upload size={14} /> Import CSV
+              <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
+            </label>
+          )}
+        </div>
+      }
     >
-      <div className="overflow-x-auto pb-2">
+      <div className="overflow-x-auto pb-12"> {/* Added padding bottom for dropdown space */}
         <table className="w-full text-left border-collapse">
           <thead>
-            {/* CATEGORY HEADER ROW */}
             <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e] border-b border-white/5">
               <th className="p-4 bg-[#0c0c0e] sticky left-0 z-20 w-56"></th>
               {kpiStructure.map(([category, catKpis]) => (
@@ -1075,9 +1096,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                 </th>
               ))}
               <th className="bg-[#0c0c0e]"></th>
-              {isManager && <th className="bg-[#0c0c0e]"></th>}
+              <th className="bg-[#0c0c0e]"></th>
             </tr>
-            {/* KPI HEADER ROW */}
             <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e] border-b border-white/10">
               <th className="p-4 font-bold sticky left-0 bg-[#0c0c0e] z-20 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
               {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
@@ -1087,7 +1107,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                      <span className="bg-white/5 px-1 rounded">{k.weight}%</span>
                      <span className="bg-white/5 px-1 rounded">Target: {k.target}</span>
                   </div>
-                  {/* Tooltip for Gates */}
                   {k.gates && (
                     <div className="absolute top-full left-0 w-full bg-zinc-900 border border-white/20 p-2 z-50 hidden group-hover/header:block text-left shadow-xl rounded-b">
                       <div className="text-[9px] text-[#E2231A] font-bold mb-1">GATEWAY LOGIC:</div>
@@ -1102,14 +1121,14 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                 </th>
               ))}
               <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10">Total Score</th>
-          <th className="p-3 text-center w-20 border-l border-white/10">Actions</th>            </tr>
+              <th className="p-3 text-center w-24 border-l border-white/10">Actions</th>            
+            </tr>
           </thead>
           <tbody>
             {rows.map((row, idx) => (
               <tr key={row.id} style={{ animationDelay: `${idx * 50}ms` }} className="border-b border-white/5 hover:bg-white/5 transition-colors group animate-slide-up">
                 <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
                   <div className="flex items-center gap-3">
-                    {/* GAMIFICATION BADGE */}
                     {(() => {
                        const lvl = getAgentLevel(row.lifetimeXP);
                        const rank = getAgentRank(lvl);
@@ -1120,7 +1139,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                          </div>
                        );
                     })()}
-    
                     <div>
                       <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
                       <div className="flex flex-wrap gap-1 mt-1">
@@ -1129,7 +1147,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     </div>
                   </div>
                 </td>
-                {/* We must map flat kpiResults, but they are already in correct order because we mapped kpis in row generation */}
                 {row.kpiResults.map(res => (
                   <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
                     {isManager ? (
@@ -1160,34 +1177,37 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     {row.totalScore.toFixed(1)}%
                   </span>
                 </td>
-               
-<td className="p-3 text-center relative group/menu border-l border-white/10">
-   <div className="flex items-center justify-center gap-1">
-      {/* PDF Export Button */}
-      <button 
-        onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, activeTeamId)}
-        className="p-2 hover:bg-white/10 rounded-full text-zinc-600 hover:text-[#E2231A] transition-all"
-        title="Download PDF Report"
-      >
-        <FileSpreadsheet size={16}/>
-      </button>
+                
+                {/* FIXED ACTIONS CELL */}
+                <td className="p-3 text-center border-l border-white/10 relative">
+                   <div className="flex items-center justify-center gap-2">
+                      {/* PDF Button - No group wrapper here */}
+                      <button 
+                        onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
+                        className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
+                        title="Download PDF"
+                      >
+                        <FileSpreadsheet size={16}/>
+                      </button>
 
-      {/* Manager Menu (Only for Managers) */}
-      {isManager && (
-        <>
-           <button className="p-2 hover:bg-white/10 rounded-full text-zinc-600 hover:text-yellow-500 transition-all"><Crown size={16}/></button>
-           <div className="absolute right-10 top-0 mt-0 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left transform translate-x-4 group-hover/menu:translate-x-0">
-              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
-              {awardsList.map(a => (
-                <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
-                  {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
-                </button>
-              ))}
-           </div>
-        </>
-      )}
-   </div>
-</td>
+                      {/* Manager Menu - ISOLATED GROUP WRAPPER */}
+                      {isManager && (
+                        <div className="relative group/menu">
+                           <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all"><Crown size={16}/></button>
+                           
+                           {/* Popup */}
+                           <div className="absolute right-0 top-full mt-2 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
+                              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
+                              {awardsList.map(a => (
+                                <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
+                                  {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
+                                </button>
+                              ))}
+                           </div>
+                        </div>
+                      )}
+                   </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1213,12 +1233,22 @@ const KPIConfigurator = ({ team }) => {
   const update = (idx, field, val) => { const n = [...kpis]; n[idx][field] = val; setKpis(n); };
 
   if (!editing) return (
-    <Card title="KPI Logic Engine" icon={Settings} action={<Button size="xs" variant="ghost" onClick={()=>setEditing(true)}><Edit3 size={14}/></Button>}>
-      <div className="flex flex-wrap gap-2">
+    <Card 
+      title="KPI Logic Engine" 
+      icon={Settings} 
+      action={<Button size="xs" variant="ghost" onClick={()=>setEditing(true)}><Edit3 size={14}/></Button>}
+    >
+      <div className="flex flex-col gap-2">
          {team.kpis?.map(k => (
-           <div key={k.id} className="bg-white/5 border border-white/5 px-3 py-2 rounded text-xs hover:border-[#E2231A]/40 transition-colors">
-              <span className="block font-bold text-[#E2231A]">{k.name}</span>
-              <span className="text-zinc-500">{k.weight}% | T: {k.target}</span>
+           <div key={k.id} className="flex items-center justify-between bg-white/5 border border-white/5 px-3 py-2 rounded text-xs hover:border-[#E2231A]/40 transition-colors">
+              <div>
+                <span className="block font-bold text-[#E2231A]">{k.name}</span>
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{k.category || 'Core'}</span>
+              </div>
+              <div className="text-right">
+                <span className="text-white font-bold">{k.weight}%</span>
+                <span className="text-zinc-500 block text-[9px]">Target: {k.target}</span>
+              </div>
            </div>
          ))}
       </div>
@@ -1227,23 +1257,35 @@ const KPIConfigurator = ({ team }) => {
 
   return (
     <Card title="Configure KPI Engine">
-      <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
         {kpis.map((k, i) => (
-          <div key={i} className="bg-white/5 p-3 rounded border border-white/5 space-y-2 animate-fade-in">
+          <div key={i} className="bg-white/5 p-3 rounded border border-white/5 space-y-3 animate-fade-in relative group">
              <div className="flex gap-2">
-                <Input value={k.name} onChange={e=>update(i,'name',e.target.value)} placeholder="Metric Name" />
-                <div className="w-24"><Input type="number" value={k.weight} onChange={e=>update(i,'weight',parseFloat(e.target.value))} placeholder="%" /></div>
+                <Input label="Name" value={k.name} onChange={e=>update(i,'name',e.target.value)} />
+                <div className="w-24"><Input label="Weight %" type="number" value={k.weight} onChange={e=>update(i,'weight',parseFloat(e.target.value))} /></div>
              </div>
+             
+             {/* ADDED CATEGORY INPUT */}
+             <Input label="Category Group" value={k.category || ''} onChange={e=>update(i,'category',e.target.value)} placeholder="e.g. Core KPIs" />
+
              <div className="grid grid-cols-2 gap-2">
                <Input type="number" label="Target" value={k.target} onChange={e=>update(i,'target',parseFloat(e.target.value))} />
-               <div className="flex flex-col gap-1">
-                 <label className="text-[10px] uppercase font-bold text-zinc-500">Optimization</label>
-                 <select value={k.direction} onChange={e=>update(i,'direction',e.target.value)} className="bg-black/50 border border-white/10 text-white text-xs p-2 rounded focus:border-[#E2231A] outline-none">
-                   <option value="higher">Higher is Better (Sales)</option>
-                   <option value="lower">Lower is Better (AHT)</option>
+               <div className="flex flex-col gap-2">
+                 <label className="text-[10px] uppercase font-bold text-zinc-500">Direction</label>
+                 <select value={k.direction} onChange={e=>update(i,'direction',e.target.value)} className="bg-black/50 border border-white/10 text-white text-xs p-3 rounded-lg focus:border-[#E2231A] outline-none w-full">
+                   <option value="higher">Higher is Better</option>
+                   <option value="lower">Lower is Better</option>
                  </select>
                </div>
              </div>
+             
+             {/* GATE INDICATOR */}
+             {k.gates && k.gates.length > 0 && (
+               <div className="bg-red-900/20 border border-red-500/20 p-2 rounded flex items-center gap-2">
+                 <AlertTriangle size={12} className="text-[#E2231A]"/>
+                 <span className="text-[10px] text-red-200">Active Gateways: {k.gates.length} rules applied.</span>
+               </div>
+             )}
           </div>
         ))}
       </div>
@@ -1254,6 +1296,7 @@ const KPIConfigurator = ({ team }) => {
     </Card>
   );
 };
+
 
 const Leaderboard = ({ members, kpis, data }) => {
   const ranked = useMemo(() => {
