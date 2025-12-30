@@ -29,7 +29,7 @@ import {
   Save, Medal, Activity, Search, Crown, AlertTriangle, Loader, 
   ArrowUpRight, Eye, Edit3, Shield, LayoutGrid, Mail, Upload, FileSpreadsheet, 
   TrendingUp, TrendingDown, Target, Lock, ChevronRight, BarChart3, Calculator,
-  Info, Zap, Sparkles, Download, Trash2
+  Info, Zap, Sparkles, Download, Trash2,UserMinus, Trash, Edit2, BookOpen, Heart, MessageSquare, Send, X
 } from 'lucide-react';
 
 // --- STYLES & ANIMATIONS ---
@@ -531,6 +531,7 @@ const MainLayout = () => {
           {view === 'lobby' && <LobbyView setView={setView} />}
           {view === 'create_team' && <CreateTeamView setView={setView} />}
           {view === 'team_dash' && <TeamDashboard />}
+          {view === 'learning_hub' && <LearningHub />}
         </main>
       </div>
     </DataContextWrapper>
@@ -913,6 +914,40 @@ const TeamDashboard = () => {
   const activeTeam = teams.find(t => t.id === activeTeamId);
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
   const isObserver = !isManager && profile.groupId !== activeTeamId;
+  // --- NEW: TEAM MANAGEMENT LOGIC ---
+  const [isEditing, setIsEditing] = useState(false);
+  const [newName, setNewName] = useState(activeTeam?.name || '');
+
+  const handleRename = async () => {
+    if (!newName.trim()) return;
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId), { name: newName });
+    setIsEditing(false);
+    showToast("Team Renamed Successfully");
+  };
+
+  const handleDeleteTeam = async () => {
+    const confirmMsg = `WARNING: You are about to DELETE ${activeTeam.name}.\n\nThis will:\n- Disband all ${members.length} agents\n- Delete all history\n\nType "DELETE" to confirm.`;
+    if (prompt(confirmMsg) !== "DELETE") return;
+
+    // 1. Free all agents
+    const batch = writeBatch(db);
+    members.forEach(m => {
+       batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'users', m.id), { groupId: null });
+    });
+    
+    // 2. Delete Team
+    batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId));
+    
+    await batch.commit();
+    showToast("Team Dissolved. Agents are now free agents.");
+    setView('lobby');
+  };
+
+  const handleRemoveMember = async (memberId, memberName) => {
+    if (!confirm(`Remove ${memberName} from the team?`)) return;
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', memberId), { groupId: null });
+    showToast(`${memberName} removed from team.`);
+  };
 
   useEffect(() => {
     if (isManager && activeTeamId) {
@@ -975,29 +1010,45 @@ const TeamDashboard = () => {
       {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-6 border-b border-white/10">
         <div>
-   <div className="flex items-center gap-3 text-zinc-500 mb-2">
-     <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
-     {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
-     
-     {/* NEW: Quick Switcher for Super Users */}
-     {profile.role === 'super_user' && (
-       <select 
-         className="bg-zinc-800 text-xs text-white p-1 rounded border border-white/10 ml-4"
-         value={activeTeamId}
-         onChange={(e) => setView(`team_view_${e.target.value}`)}
-       >
-         {teams.map(t => <option key={t.id} value={t.id}>Jump to: {t.name}</option>)}
-       </select>
-     )}
-   </div>
-   <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
-</div>
+           <div className="flex items-center gap-3 text-zinc-500 mb-2">
+             <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
+             {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
+           </div>
+           
+           {/* RENAME LOGIC */}
+           {isEditing ? (
+             <div className="flex items-center gap-2">
+               <input 
+                 value={newName} 
+                 onChange={e => setNewName(e.target.value)}
+                 className="bg-zinc-800 text-3xl font-black text-white p-2 rounded border border-white/20 outline-none w-full max-w-md"
+                 autoFocus
+               />
+               <Button size="sm" onClick={handleRename}><CheckCircle size={18}/></Button>
+               <Button size="sm" variant="ghost" onClick={() => setIsEditing(false)}><X size={18}/></Button>
+             </div>
+           ) : (
+             <div className="flex items-center gap-4 group">
+               <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
+               {isManager && (
+                 <button onClick={() => { setIsEditing(true); setNewName(activeTeam.name); }} className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-white">
+                   <Edit2 size={20}/>
+                 </button>
+               )}
+             </div>
+           )}
+        </div>
         
         <div className="flex gap-3">
           {isManager && (
-            <Button variant="outline" onClick={handleArchiveMonth} title="Finalize Month & Distribute XP">
-              <Save size={16} /> Archive Period
-            </Button>
+            <>
+              <Button variant="outline" onClick={handleArchiveMonth} title="Finalize Month & Distribute XP">
+                <Save size={16} /> Archive Period
+              </Button>
+              <Button variant="danger" onClick={handleDeleteTeam} title="Dissolve Team">
+                <Trash size={16} />
+              </Button>
+            </>
           )}
           {!isManager && !isObserver && !profile.groupId && (
             <RequestJoinButton teamId={activeTeamId} userId={profile.id} userName={profile.name} />
@@ -1055,7 +1106,7 @@ const TeamDashboard = () => {
         )}
 
         <div className={cn("space-y-8", isManager ? "xl:col-span-3" : "xl:col-span-4")}>
-          <PerformanceMatrix members={members} kpis={activeTeam.kpis || []} data={performance} isManager={isManager} teamId={activeTeam.id} awardsList={activeTeam.awards || []} />
+          <PerformanceMatrix members={members} kpis={activeTeam.kpis || []} data={performance} isManager={isManager} teamId={activeTeam.id} awardsList={activeTeam.awards || []} onRemoveMember={handleRemoveMember} />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <Leaderboard members={members} kpis={activeTeam.kpis || []} data={performance} />
             <AwardWall members={members} data={performance} />
@@ -1199,7 +1250,7 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 
 
 // --- MAIN COMPONENT ---
-const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList }) => {
+const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
 
   const kpiStructure = useMemo(() => {
@@ -1416,6 +1467,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                 
                 <td className="p-3 text-center border-l border-white/10 relative">
                    <div className="flex items-center justify-center gap-2">
+                      {/* ... existing PDF button ... */}
                       <button 
                         onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
                         className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
@@ -1425,18 +1477,29 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                       </button>
 
                       {isManager && (
-                        <div className="relative group/menu">
-                           <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all"><Crown size={16}/></button>
-                           
-                           <div className="absolute right-0 top-full mt-2 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
-                              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
-                              {awardsList.map(a => (
-                                <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
-                                  {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
-                                </button>
-                              ))}
+                        <>
+                           {/* EXISTING AWARD MENU */}
+                           <div className="relative group/menu">
+                              <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all"><Crown size={16}/></button>
+                              <div className="absolute right-0 top-full mt-2 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
+                                  {/* ... awards list code ... */}
+                                  {awardsList.map(a => (
+                                    <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
+                                      {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
+                                    </button>
+                                  ))}
+                              </div>
                            </div>
-                        </div>
+                           
+                           {/* NEW: REMOVE AGENT BUTTON */}
+                           <button 
+                             onClick={() => onRemoveMember(row.id, row.name)}
+                             className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all"
+                             title="Remove from Team"
+                           >
+                             <UserMinus size={16}/>
+                           </button>
+                        </>
                       )}
                    </div>
                 </td>
@@ -1742,6 +1805,112 @@ const AwardWall = ({ members, data }) => {
   );
 };
 
+const LearningHub = () => {
+  const { profile } = useContext(AuthContext);
+  const { showToast } = useContext(ToastContext);
+  const [posts, setPosts] = useState([]);
+  const [isCreating, setIsCreating] = useState(false);
+  const [newPost, setNewPost] = useState({ title: '', content: '', tag: 'General' });
+
+  useEffect(() => {
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), orderBy('createdAt', 'desc'));
+    // Note: requires "createdAt" index in Firestore, or remove orderBy until index is built
+    // For now, let's use client-side sort if index issues occur, or just standard fetch
+    return onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), (snap) => {
+      setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.createdAt?.seconds - a.createdAt?.seconds));
+    });
+  }, []);
+
+  const handleCreate = async () => {
+    if (!newPost.title || !newPost.content) return;
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
+      ...newPost,
+      authorName: profile.name,
+      authorId: profile.id,
+      createdAt: serverTimestamp(),
+      likes: []
+    });
+    setIsCreating(false);
+    setNewPost({ title: '', content: '', tag: 'General' });
+    showToast("Knowledge Shared!");
+  };
+
+  const toggleLike = async (postId, currentLikes = []) => {
+    const likes = currentLikes.includes(profile.id) 
+      ? currentLikes.filter(id => id !== profile.id)
+      : [...currentLikes, profile.id];
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', postId), { likes });
+  };
+
+  return (
+    <div className="space-y-8 animate-slide-up max-w-4xl mx-auto">
+      <div className="flex justify-between items-end border-b border-white/10 pb-6">
+        <div>
+          <h2 className="text-4xl font-black uppercase text-white tracking-tighter">Learning <span className="text-[#E2231A]">Hub</span></h2>
+          <p className="text-zinc-500 mt-1 flex items-center gap-2"><BookOpen size={14}/> Share Best Practices & Intel</p>
+        </div>
+        <Button onClick={() => setIsCreating(!isCreating)}>{isCreating ? 'Cancel' : 'Share Knowledge'}</Button>
+      </div>
+
+      {isCreating && (
+        <Card className="animate-fade-in border-[#E2231A]/50">
+           <div className="space-y-4">
+             <Input label="Topic Title" value={newPost.title} onChange={e => setNewPost({...newPost, title: e.target.value})} placeholder="How to handle objection X..." />
+             <div className="space-y-2">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest ml-1">Knowledge Content</label>
+                <textarea 
+                  className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-sm text-white focus:border-[#E2231A] outline-none min-h-[150px]" 
+                  placeholder="Type your insights here..."
+                  value={newPost.content}
+                  onChange={e => setNewPost({...newPost, content: e.target.value})}
+                />
+             </div>
+             <div className="flex justify-end">
+               <Button onClick={handleCreate}><Send size={16}/> Publish</Button>
+             </div>
+           </div>
+        </Card>
+      )}
+
+      <div className="grid gap-6">
+        {posts.map(post => (
+          <div key={post.id} className="glass-panel p-6 rounded-xl hover:border-white/20 transition-all group">
+             <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3 className="text-xl font-bold text-white mb-1">{post.title}</h3>
+                  <div className="flex items-center gap-2 text-xs text-zinc-500">
+                    <span className="text-[#E2231A] font-bold uppercase">{post.authorName}</span>
+                    <span>•</span>
+                    <span>{new Date(post.createdAt?.seconds * 1000).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="bg-white/5 px-3 py-1 rounded-full text-[10px] font-bold uppercase text-zinc-400">
+                  {post.tag}
+                </div>
+             </div>
+             <p className="text-zinc-300 text-sm leading-relaxed whitespace-pre-line mb-6 pl-4 border-l-2 border-[#E2231A]/30">
+               {post.content}
+             </p>
+             <div className="flex gap-4 border-t border-white/5 pt-4">
+                <button 
+                  onClick={() => toggleLike(post.id, post.likes)}
+                  className={cn(
+                    "flex items-center gap-2 text-xs font-bold transition-colors",
+                    post.likes?.includes(profile.id) ? "text-pink-500" : "text-zinc-500 hover:text-white"
+                  )}
+                >
+                  <Heart size={14} className={cn(post.likes?.includes(profile.id) && "fill-current")} /> 
+                  {post.likes?.length || 0} Kudos
+                </button>
+             </div>
+          </div>
+        ))}
+        {posts.length === 0 && !isCreating && <div className="text-center py-20 text-zinc-600 italic">No knowledge shared yet. Be the first.</div>}
+      </div>
+    </div>
+  );
+};
+
 // --- NAVIGATION & UI ---
 
 const Navbar = ({ view, setView }) => {
@@ -1767,6 +1936,14 @@ const Navbar = ({ view, setView }) => {
            <Button variant="ghost" onClick={logout} className="text-zinc-500 hover:text-white hover:bg-white/10"><LogOut size={20}/></Button>
         </div>
       </div>
+      <div className="hidden md:flex items-center gap-1 bg-white/5 p-1.5 rounded-full border border-white/5">
+              <NavBtn active={view === 'lobby'} onClick={()=>setView('lobby')} icon={LayoutGrid} label="Lobby" />
+              {/* NEW BUTTON */}
+              <NavBtn active={view === 'learning_hub'} onClick={()=>setView('learning_hub')} icon={BookOpen} label="Learning" />
+              
+              {profile.role === 'super_user' && <NavBtn active={view === 'admin_dash'} onClick={()=>setView('admin_dash')} icon={Shield} label="Admin" />}
+              {profile.groupId && <NavBtn active={view === 'team_dash'} onClick={()=>setView('team_dash')} icon={Users} label="My Team" />}
+           </div>
     </nav>
   );
 };
