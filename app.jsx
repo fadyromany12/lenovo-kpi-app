@@ -28,7 +28,7 @@ import {
   Save, Medal, Activity, Search, Crown, AlertTriangle, Loader, 
   ArrowUpRight, Eye, Edit3, Shield, LayoutGrid, Mail, Upload, FileSpreadsheet, 
   TrendingUp, TrendingDown, Target, Lock, ChevronRight, BarChart3, Calculator,
-  Info, Zap, Sparkles
+  Info, Zap, Sparkles, Download 
 } from 'lucide-react';
 
 // --- STYLES & ANIMATIONS ---
@@ -113,7 +113,7 @@ const GlobalStyles = () => (
 
 // --- CONFIGURATION ---
 const firebaseConfig = {
-  apiKey: "AIzaSyBiPHLP6Wx2JBJocWxbN7vc8TRmHfLHAIA",
+  apiKey: "import.meta.env.VITE_FIREBASE_API_KEY",
   authDomain: "lenovo-kpi-app.firebaseapp.com",
   projectId: "lenovo-kpi-app",
   storageBucket: "lenovo-kpi-app.firebasestorage.app",
@@ -272,42 +272,7 @@ const getAgentRank = (level) => {
   return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
 };
 
-const DashboardRouter = ({ user }) => {
-  
-  // 1. If Superadmin: Show Team Selector & Configuration
-  if (user.role === 'SUPER_ADMIN') {
-    return (
-      <div>
-        <div className="admin-bar">
-          <label>Viewing Settings For: </label>
-          <select onChange={(e) => loadTeamData(e.target.value)}>
-             <option value="team_alpha">Alpha Team</option>
-             <option value="team_beta">Beta Team</option>
-          </select>
-        </div>
-        
-        {/* Render the Editable Configurator from Step 2 */}
-        <KpiConfigurator readOnly={false} />
-      </div>
-    );
-  }
 
-  // 2. If Manager/Agent: Show "Wall of Fame" (Read Only)
-  return (
-    <div className="view-mode">
-      <h1>My Performance</h1>
-      
-      {/* Instead of forms, show charts/ranks */}
-      <WallOfFame teamId={user.teamId} />
-      <Leaderboard teamId={user.teamId} />
-      
-      {/* If they click "KPI Details", show the list but DISABLED */}
-      <div className="kpi-read-only-list">
-         {/* Render list without input fields, just text */}
-      </div>
-    </div>
-  );
-};
 
 // --- CONTEXTS ---
 const AuthContext = createContext(null);
@@ -496,13 +461,22 @@ const DataContextWrapper = ({ children, view, setView }) => {
 
   useEffect(() => {
     if (!activeTeamId) { setMembers([]); setPerformance({}); return; }
-    const unsubMembers = onSnapshot(query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('groupId', '==', activeTeamId)), (snap) => {
-      setMembers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+
+    // OPTIMIZATION: Fetch members once (lighter load)
+    const fetchMembers = async () => {
+      try {
+        const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('groupId', '==', activeTeamId));
+        const snap = await getDocs(q);
+        setMembers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (err) { console.error("Error loading members:", err); }
+    };
+    fetchMembers();
+
+    // Keep Performance real-time (it changes often)
     const unsubPerf = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'performance'), (snap) => {
       const p = {}; snap.docs.forEach(d => p[d.id] = d.data()); setPerformance(p);
     });
-    return () => { unsubMembers(); unsubPerf(); };
+    return () => { unsubPerf(); };
   }, [activeTeamId]);
 
   return ( <DataContext.Provider value={{ teams, activeTeamId, members, performance, view, setView }}>{children}</DataContext.Provider> );
@@ -903,12 +877,23 @@ const TeamDashboard = () => {
       {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-6 border-b border-white/10">
         <div>
-           <div className="flex items-center gap-3 text-zinc-500 mb-2">
-             <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
-             {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
-           </div>
-           <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
-        </div>
+   <div className="flex items-center gap-3 text-zinc-500 mb-2">
+     <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
+     {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
+     
+     {/* NEW: Quick Switcher for Super Users */}
+     {profile.role === 'super_user' && (
+       <select 
+         className="bg-zinc-800 text-xs text-white p-1 rounded border border-white/10 ml-4"
+         value={activeTeamId}
+         onChange={(e) => setView(`team_view_${e.target.value}`)}
+       >
+         {teams.map(t => <option key={t.id} value={t.id}>Jump to: {t.name}</option>)}
+       </select>
+     )}
+   </div>
+   <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
+</div>
         
         <div className="flex gap-3">
           {isManager && (
@@ -967,7 +952,7 @@ const TeamDashboard = () => {
                  </div>
                )}
              </Card>
-             <KPIConfigurator team={activeTeam} />
+             <KPIConfigurator currentteam={activeTeam} />
            </div>
         )}
 
@@ -1072,8 +1057,50 @@ const generateAgentReport = (agent, kpis, kpiResults, totalScore, awards, teamNa
   doc.save(`Report_${agent.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`);
 };
 
-// --- DATA COMPONENTS ---
 
+// --- HELPER COMPONENTS ---
+const DebouncedInput = ({ value, onSave, placeholder }) => {
+  const [localVal, setLocalVal] = useState(value || '');
+  const [status, setStatus] = useState('saved'); // 'saved', 'typing', 'saving'
+
+  useEffect(() => { setLocalVal(value || ''); }, [value]);
+
+  useEffect(() => {
+    // Don't trigger save if value hasn't changed or isn't initialized
+    if (localVal === (value || '')) return;
+
+    setStatus('typing');
+    const timer = setTimeout(async () => {
+      setStatus('saving');
+      await onSave(localVal);
+      setStatus('saved');
+    }, 600); // 600ms Debounce
+
+    return () => clearTimeout(timer);
+  }, [localVal]);
+
+  return (
+    <div className="relative group/input">
+      <input 
+        type="number" 
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        className={cn(
+          "bg-black/40 border w-20 text-center text-xs p-2 rounded outline-none transition-all focus:scale-105",
+          status === 'saving' ? "border-yellow-500/50 text-yellow-500" : "border-white/10 text-white focus:border-[#E2231A]"
+        )}
+        placeholder={placeholder}
+      />
+      {/* Saving Indicator */}
+      {status === 'saving' && (
+        <div className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-500 rounded-full animate-ping"></div>
+      )}
+    </div>
+  );
+};
+
+
+// --- MAIN COMPONENT ---
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList }) => {
   const { showToast } = useContext(ToastContext);
 
@@ -1116,6 +1143,29 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { ...current, awards: newAwards }, { merge: true });
   };
 
+  // NEW: CSV EXPORT FUNCTION
+  const handleCSVExport = () => {
+    if (!members.length) return;
+    
+    // 1. Create Headers
+    const headers = ['Email', 'Name', ...kpis.map(k => k.name)].join(',');
+    
+    // 2. Create Rows
+    const rows = members.map(m => {
+      const p = data[m.id] || { actuals: {} };
+      // Escape commas in names/emails if necessary, simple join here
+      const scores = kpis.map(k => p.actuals?.[k.id] || '').join(',');
+      return `${m.email},${m.name},${scores}`;
+    }).join('\n');
+
+    // 3. Download
+    const blob = new Blob([headers + '\n' + rows], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Performance_Export_${teamId}_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+  };
+
   const handleCSVUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1153,20 +1203,31 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
     <Card 
       title="Performance Matrix" 
       icon={Activity} 
-      className="min-h-[500px]" // FIXED: Added min-height for better default size
+      className="min-h-[500px]"
       action={
         <div className="flex items-center gap-3">
           <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
           {isManager && (
-            <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-4 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
-              <Upload size={14} /> Import CSV
-              <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
-            </label>
+            <div className="flex gap-2">
+              {/* NEW: Export Button */}
+              <button 
+                 onClick={handleCSVExport}
+                 className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all"
+                 title="Export current view to CSV"
+              >
+                <Download size={14} /> Export
+              </button>
+
+              <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
+                <Upload size={14} /> Import CSV
+                <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
+              </label>
+            </div>
           )}
         </div>
       }
     >
-      <div className="overflow-x-auto pb-12"> {/* Added padding bottom for dropdown space */}
+      <div className="overflow-x-auto pb-12">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
@@ -1188,7 +1249,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                      <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
                      <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">T: {k.target}</span>
                   </div>
-                  {/* Tooltip logic remains the same... */}
                   {k.gates && (
                     <div className="absolute top-full left-0 w-full bg-zinc-900 border border-white/20 p-2 z-50 hidden group-hover/header:block text-left shadow-xl rounded-b">
                       <div className="text-[9px] text-[#E2231A] font-bold mb-1">GATEWAY LOGIC:</div>
@@ -1232,15 +1292,11 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                 {row.kpiResults.map(res => (
                   <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
                     {isManager ? (
-                      <input 
-                        type="number" 
-                        value={res.val || ''}
-                        onChange={(e) => updateScore(row.id, res.id, e.target.value)}
-                        className={cn(
-                          "bg-black/40 border w-20 text-center text-xs p-2 rounded outline-none transition-all focus:scale-105",
-                          res.weighted === 0 && res.val ? "border-red-500 text-red-500" : "border-white/10 text-white focus:border-[#E2231A]"
-                        )}
-                        placeholder="-"
+                      // UPDATED: Using DebouncedInput
+                      <DebouncedInput 
+                        value={res.val} 
+                        onSave={(val) => updateScore(row.id, res.id, val)}
+                        placeholder="-" 
                       />
                     ) : (
                       <span className={cn("font-mono text-sm font-bold", res.weighted === 0 && res.val ? "text-red-500" : "text-white")}>
@@ -1260,10 +1316,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                   </span>
                 </td>
                 
-                {/* FIXED ACTIONS CELL */}
                 <td className="p-3 text-center border-l border-white/10 relative">
                    <div className="flex items-center justify-center gap-2">
-                      {/* PDF Button - No group wrapper here */}
                       <button 
                         onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
                         className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
@@ -1272,12 +1326,10 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                         <FileSpreadsheet size={16}/>
                       </button>
 
-                      {/* Manager Menu - ISOLATED GROUP WRAPPER */}
                       {isManager && (
                         <div className="relative group/menu">
                            <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all"><Crown size={16}/></button>
                            
-                           {/* Popup */}
                            <div className="absolute right-0 top-full mt-2 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
                               <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
                               {awardsList.map(a => (
@@ -1301,9 +1353,13 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
 };
 
 const KpiConfigurator = ({ userRole, currentTeam }) => {
-  const [kpis, setKpis] = useState(initialKpis);
-  const [gateways, setGateways] = useState(initialGateways);
+  // FIX: Use currentTeam.kpis or fallback to defaults. Initialize gateways as empty array.
+  const [kpis, setKpis] = useState(currentTeam?.kpis || []);
+  const [gateways, setGateways] = useState(currentTeam?.gateways || []);
 
+  const removeGateway = (id) => {
+    setGateways(gateways.filter(g => g.id !== id));
+  };
   // --- ACTIONS ---
 
   // Add a new empty KPI card
