@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, createContext, useContext, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { 
   getAuth, 
   signInAnonymously, 
@@ -66,7 +68,7 @@ const GlobalStyles = () => (
 
 // --- CONFIGURATION ---
 const firebaseConfig = {
-  apiKey: "",
+  apiKey: "AIzaSyBiPHLP6Wx2JBJocWxbN7vc8TRmHfLHAIA",
   authDomain: "lenovo-kpi-app.firebaseapp.com",
   projectId: "lenovo-kpi-app",
   storageBucket: "lenovo-kpi-app.firebasestorage.app",
@@ -92,10 +94,82 @@ const ADMIN_SECRET = "lenovo2025";
 
 // --- DEFAULT DATA ---
 const DEFAULT_KPIS = [
-  { id: 'rev', name: 'Revenue Target', weight: 50, target: 10000, type: 'value', direction: 'higher', note: 'Client Shared Target' },
-  { id: 'att', name: 'Adherence & Attendance', weight: 25, target: 95, type: 'percent', direction: 'higher', note: 'Table Based' },
-  { id: 'conv', name: 'Customer Acceptance', weight: 15, target: 15, type: 'percent', direction: 'higher', note: 'Conversion Rate' },
-  { id: 'qual', name: 'Quality Audit', weight: 10, target: 8, type: 'count', direction: 'higher', note: '8 contacts/month' },
+  // --- CORE KPIS ---
+  { 
+    id: 'rev', 
+    name: 'Revenue Target', 
+    category: 'Core KPIs',
+    weight: 50, 
+    target: 10000, 
+    type: 'value', 
+    direction: 'higher', 
+    note: 'Client Shared Target' 
+  },
+  { 
+    id: 'cust_acc', 
+    name: 'Customer Acceptance', 
+    category: 'Core KPIs',
+    weight: 15, 
+    target: 15, 
+    type: 'percent', 
+    direction: 'higher', 
+    note: 'Conversion Rate' 
+  },
+  { 
+    id: 'qual', 
+    name: 'Quality Audit', 
+    category: 'Core KPIs',
+    weight: 10, 
+    target: 8, 
+    type: 'count', 
+    direction: 'higher', 
+    note: '8 contacts/month' 
+  },
+  
+  // --- ADHERENCE & ATTENDANCE ---
+  { 
+    id: 'att_absent', 
+    name: 'Attendance (Sick/Emergency)', 
+    category: 'Adherence & Attendance',
+    weight: 15, 
+    target: 0, 
+    type: 'percent', 
+    direction: 'lower', 
+    note: 'Gate System',
+    gates: [
+      { threshold: 4.55, multiplier: 1.0, label: 'Approved (100%)' },
+      { threshold: 9.09, multiplier: 0.5, label: 'Warning (50%)' },
+      { threshold: 100, multiplier: 0.0, label: 'Failed (0%)' } // Anything above 9.09 hits this
+    ]
+  },
+  { 
+    id: 'adh_login', 
+    name: 'Login/Out Adherence', 
+    category: 'Adherence & Attendance',
+    weight: 5, // Split 10% between these two
+    target: 3, 
+    type: 'count', 
+    direction: 'lower', 
+    note: 'Gate: >3 = 0%',
+    gates: [
+      { threshold: 3, multiplier: 1.0, label: 'Pass' },
+      { threshold: 1000, multiplier: 0.0, label: 'Fail' }
+    ]
+  },
+  { 
+    id: 'adh_aux', 
+    name: 'Exceed AUX', 
+    category: 'Adherence & Attendance',
+    weight: 5, 
+    target: 3, 
+    type: 'count', 
+    direction: 'lower', 
+    note: 'Gate: >3 = 0%',
+    gates: [
+      { threshold: 3, multiplier: 1.0, label: 'Pass' },
+      { threshold: 1000, multiplier: 0.0, label: 'Fail' }
+    ]
+  }
 ];
 
 const DEFAULT_AWARDS = [
@@ -110,13 +184,54 @@ const parseNameFromEmail = (email) => {
   const parts = clean.split('.');
   return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 };
-const calculateScore = (actual, target, direction, weight) => {
+const calculateScore = (actual, target, direction, weight, gates) => {
   const act = parseFloat(actual);
-  const tgt = parseFloat(target) || 1; 
   if (isNaN(act)) return 0;
+
+  // 1. Check Gates (Gateway Logic)
+  // If gates exist, we check if the actual value passes the thresholds.
+  if (gates && gates.length > 0) {
+    // Sort gates by threshold ascending
+    const sortedGates = [...gates].sort((a, b) => a.threshold - b.threshold);
+    let multiplier = 0;
+    
+    // Find the range the actual value falls into
+    for (const gate of sortedGates) {
+      if (act <= gate.threshold) {
+        multiplier = gate.multiplier;
+        break; // Found our tier
+      }
+    }
+    // --- GAMIFICATION UTILS ---
+const getAgentLevel = (xp) => Math.floor((xp || 0) / 1000) + 1;
+
+const getAgentRank = (level) => {
+  if (level >= 20) return { name: 'Diamond', color: 'text-cyan-400', border: 'border-cyan-500/50', bg: 'bg-cyan-950/30' };
+  if (level >= 10) return { name: 'Gold', color: 'text-yellow-400', border: 'border-yellow-500/50', bg: 'bg-yellow-950/30' };
+  if (level >= 5) return { name: 'Silver', color: 'text-zinc-300', border: 'border-zinc-500/50', bg: 'bg-zinc-800/50' };
+  return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
+};
+    
+    // If direction is lower (e.g. absences), being lower is good.
+    // If we exceeded all gates (e.g. > 9.09), multiplier stays 0 (or whatever the last gate was if logic implies)
+    // Based on user request: > 9.09 is 0%.
+    return weight * multiplier;
+  }
+
+  // 2. Standard Calculation (if no gates)
+  const tgt = parseFloat(target) || 1; 
   let scorePct = 0;
-  if (direction === 'higher') scorePct = (act / tgt) * 100;
-  else { if (act === 0) scorePct = 120; else scorePct = (tgt / act) * 100; }
+  
+  if (direction === 'higher') {
+    // Higher is better (Revenue)
+    scorePct = (act / tgt) * 100;
+  } else { 
+    // Lower is better (AHT, Defects)
+    if (act === 0) scorePct = 120; // Bonus for 0 defects/absences if no gates defined
+    else scorePct = (tgt / act) * 100; 
+  }
+
+  // Cap at 150% achievement
   return (Math.min(scorePct, 150) / 100) * weight;
 };
 
@@ -584,11 +699,51 @@ const CreateTeamView = ({ setView }) => {
   );
 };
 
+const TrendChart = ({ data, kpis }) => {
+  if (!data || data.length === 0) return null;
+  
+  // Calculate team average per month
+  const chartData = data.map(month => {
+    const scores = Object.values(month.stats).map(s => s.totalScore);
+    const avg = scores.reduce((a, b) => a + b, 0) / (scores.length || 1);
+    return { label: month.id, value: avg };
+  }).sort((a, b) => a.label.localeCompare(b.label)); // Sort by date
+
+  const maxVal = 150; // Max score cap
+  const height = 200;
+  
+  return (
+    <Card title="Historical Velocity" icon={TrendingUp} className="h-full">
+      <div className="flex items-end justify-between h-[200px] gap-2 pt-8 pb-2 px-4">
+        {chartData.map((d, i) => (
+          <div key={i} className="flex-1 flex flex-col justify-end items-center group relative">
+             {/* Tooltip */}
+             <div className="absolute -top-8 bg-zinc-800 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 border border-white/10">
+               {d.label}: {d.value.toFixed(1)}%
+             </div>
+             {/* Bar */}
+             <div 
+               className="w-full max-w-[40px] bg-gradient-to-t from-[#E2231A]/20 to-[#E2231A] rounded-t-sm transition-all duration-1000 relative overflow-hidden"
+               style={{ height: `${(d.value / maxVal) * 100}%` }}
+             >
+               <div className="absolute top-0 left-0 w-full h-[2px] bg-white/50"></div>
+             </div>
+             {/* Label */}
+             <div className="mt-2 text-[10px] text-zinc-500 font-bold uppercase rotate-0 truncate w-full text-center">{d.label}</div>
+          </div>
+        ))}
+        {chartData.length === 0 && <div className="w-full text-center text-zinc-600 text-xs">No history archived yet.</div>}
+      </div>
+    </Card>
+  );
+};
+
 const TeamDashboard = () => {
   const { activeTeamId, members, performance, teams } = useContext(DataContext);
   const { profile } = useContext(AuthContext);
   const { showToast } = useContext(ToastContext);
   const [requests, setRequests] = useState([]);
+  const [history, setHistory] = useState([]); // Stores archived months
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
@@ -597,9 +752,56 @@ const TeamDashboard = () => {
   useEffect(() => {
     if (isManager && activeTeamId) {
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'requests'), where('groupId', '==', activeTeamId), where('status', '==', 'pending'));
-      return onSnapshot(q, (snap) => setRequests(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+      const unsubReq = onSnapshot(q, (snap) => setRequests(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+      return () => unsubReq();
     }
   }, [isManager, activeTeamId]);
+
+  // Fetch History
+  useEffect(() => {
+    if (activeTeamId) {
+      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'archives'));
+      return onSnapshot(q, (snap) => setHistory(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    }
+  }, [activeTeamId]);
+
+  const handleArchiveMonth = async () => {
+    if (!confirm("Confirm Archive? This will:\n1. Save current stats to History\n2. Add XP to Agents\n3. This cannot be undone.")) return;
+    
+    const monthId = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const batch = writeBatch(db);
+    const statsSnapshot = {};
+
+    // 1. Calculate final scores and prepare XP updates
+    members.forEach(m => {
+      const p = performance[m.id] || { actuals: {} };
+      let total = 0;
+      activeTeam.kpis.forEach(k => {
+        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.gates);
+      });
+      
+      // Save for history
+      statsSnapshot[m.id] = { 
+        name: m.name, 
+        totalScore: total, 
+        actuals: p.actuals || {},
+        awards: p.awards || []
+      };
+
+      // Add XP (Score = XP)
+      const xpEarned = Math.round(total * 10); // 100% = 1000 XP
+      const newLifetimeXP = (m.lifetimeXP || 0) + xpEarned;
+      const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', m.id);
+      batch.update(userRef, { lifetimeXP: newLifetimeXP });
+    });
+
+    // 2. Create Archive Doc
+    const archiveRef = doc(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'archives', monthId);
+    batch.set(archiveRef, { stats: statsSnapshot, archivedAt: serverTimestamp() });
+
+    await batch.commit();
+    showToast(`Month ${monthId} Archived & XP Distributed!`);
+  };
 
   if (!activeTeam) return <div className="min-h-[50vh] flex items-center justify-center"><Loader className="animate-spin text-[#E2231A]" /></div>;
 
@@ -615,9 +817,39 @@ const TeamDashboard = () => {
            <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
         </div>
         
-        {!isManager && !isObserver && !profile.groupId && (
-          <RequestJoinButton teamId={activeTeamId} userId={profile.id} userName={profile.name} />
-        )}
+        <div className="flex gap-3">
+          {isManager && (
+            <Button variant="outline" onClick={handleArchiveMonth} title="Finalize Month & Distribute XP">
+              <Save size={16} /> Archive Period
+            </Button>
+          )}
+          {!isManager && !isObserver && !profile.groupId && (
+            <RequestJoinButton teamId={activeTeamId} userId={profile.id} userName={profile.name} />
+          )}
+        </div>
+      </div>
+
+      {/* CHARTS & STATS */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+         <div className="md:col-span-2">
+            <TrendChart data={history} kpis={activeTeam.kpis} />
+         </div>
+         <div className="md:col-span-1">
+            <Card title="Team Vitality" icon={Activity} className="h-full">
+              <div className="flex flex-col justify-center h-full gap-4">
+                 <div className="bg-white/5 p-4 rounded-lg">
+                    <div className="text-zinc-500 text-xs uppercase font-bold">Total History</div>
+                    <div className="text-2xl font-black text-white">{history.length} <span className="text-sm font-normal text-zinc-500">Months</span></div>
+                 </div>
+                 <div className="bg-white/5 p-4 rounded-lg">
+                    <div className="text-zinc-500 text-xs uppercase font-bold">Top Rank</div>
+                    <div className="text-2xl font-black text-[#E2231A]">
+                       {members.reduce((max, m) => Math.max(max, getAgentLevel(m.lifetimeXP)), 0)} <span className="text-sm font-normal text-zinc-500">Lvl</span>
+                    </div>
+                 </div>
+              </div>
+            </Card>
+         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
@@ -658,17 +890,120 @@ const TeamDashboard = () => {
   );
 };
 
+// --- PDF GENERATOR ---
+const generateAgentReport = (agent, kpis, kpiResults, totalScore, awards, teamName) => {
+  const doc = new jsPDF();
+  const themeRed = [226, 35, 26]; // #E2231A
+  const themeDark = [20, 20, 22];
+
+  // Header Background
+  doc.setFillColor(...themeDark);
+  doc.rect(0, 0, 210, 40, 'F');
+  
+  // Title & Team
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22);
+  doc.setFont("helvetica", "bold");
+  doc.text("PERFORMANCE SCORECARD", 14, 20);
+  
+  doc.setFontSize(10);
+  doc.setTextColor(200, 200, 200);
+  doc.text(`UNIT: ${teamName.toUpperCase()}`, 14, 30);
+  doc.text(`GENERATED: ${new Date().toLocaleDateString()}`, 14, 35);
+
+  // Logo Placeholder (Red Strip)
+  doc.setFillColor(...themeRed);
+  doc.rect(0, 38, 210, 2, 'F');
+
+  // Agent Identity Section
+  doc.setTextColor(0, 0, 0);
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text(agent.name, 14, 55);
+  
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(100, 100, 100);
+  doc.text(agent.email, 14, 61);
+
+  // Score Badge (Right Side)
+  doc.setFillColor(...(totalScore >= 100 ? themeRed : themeDark));
+  doc.roundedRect(160, 48, 35, 20, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(16);
+  doc.setFont("helvetica", "bold");
+  doc.text(`${totalScore.toFixed(1)}%`, 177.5, 61, { align: 'center' });
+  doc.setFontSize(7);
+  doc.text("FINAL SCORE", 177.5, 53, { align: 'center' });
+
+  // Awards Section
+  if (awards.length > 0) {
+    doc.setFontSize(10);
+    doc.setTextColor(...themeRed);
+    doc.text("DISTINCTIONS:", 14, 75);
+    doc.setTextColor(0,0,0);
+    doc.text(awards.join("  •  "), 45, 75);
+  }
+
+  // KPI Table
+  const tableRows = kpiResults.map(k => [
+    k.name,
+    k.category || 'Core',
+    k.target,
+    k.val || '-',
+    `${k.weight}%`,
+    `${k.weighted.toFixed(1)}`
+  ]);
+
+  autoTable(doc, {
+    startY: 85,
+    head: [['Metric', 'Category', 'Target', 'Actual', 'Weight', 'Score']],
+    body: tableRows,
+    theme: 'grid',
+    headStyles: { fillColor: themeDark, textColor: 255, fontStyle: 'bold' },
+    columnStyles: {
+      0: { fontStyle: 'bold' },
+      5: { fontStyle: 'bold', textColor: themeRed }
+    },
+    styles: { fontSize: 9, cellPadding: 3 },
+    foot: [['', '', '', '', 'TOTAL', totalScore.toFixed(1)]],
+    footStyles: { fillColor: [240, 240, 240], textColor: 0, fontStyle: 'bold' }
+  });
+
+  // Footer
+  const finalY = doc.lastAutoTable.finalY + 20;
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("CONFIDENTIAL INTERNAL DOCUMENT", 105, 280, { align: 'center' });
+
+  doc.save(`Report_${agent.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`);
+};
+
 // --- DATA COMPONENTS ---
 
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList }) => {
   const { showToast } = useContext(ToastContext);
+
+  // 1. Group KPIs by Category
+  const kpiStructure = useMemo(() => {
+    const groups = {};
+    kpis.forEach(k => {
+      const cat = k.category || 'Other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(k);
+    });
+    return Object.entries(groups); // [['Core', [kpi1, kpi2]], ['Adherence', [kpi3, kpi4]]]
+  }, [kpis]);
+
   const rows = useMemo(() => {
     return members.map(m => {
       const p = data[m.id] || { actuals: {}, awards: [] };
       let totalScore = 0;
+      
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        const weighted = calculateScore(val, k.target, k.direction, k.weight);
+        // PASS GATES TO CALCULATOR
+        const weighted = calculateScore(val, k.target, k.direction, k.weight, k.gates);
         totalScore += weighted;
         return { ...k, val, weighted };
       });
@@ -735,29 +1070,61 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
       <div className="overflow-x-auto pb-2">
         <table className="w-full text-left border-collapse">
           <thead>
+            {/* CATEGORY HEADER ROW */}
             <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e] border-b border-white/5">
-              <th className="p-4 font-bold sticky left-0 bg-[#0c0c0e] z-20 w-56 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent</th>
-              {kpis.map(k => (
-                <th key={k.id} className="p-3 text-center min-w-[120px]">
-                  <div className="text-zinc-300 font-bold">{k.name}</div>
-                  <div className="flex justify-center gap-2 mt-1 opacity-60 text-[9px]">
+              <th className="p-4 bg-[#0c0c0e] sticky left-0 z-20 w-56"></th>
+              {kpiStructure.map(([category, catKpis]) => (
+                <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518] text-[#E2231A] font-black tracking-widest">
+                  {category}
+                </th>
+              ))}
+              <th className="bg-[#0c0c0e]"></th>
+              {isManager && <th className="bg-[#0c0c0e]"></th>}
+            </tr>
+            {/* KPI HEADER ROW */}
+            <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e] border-b border-white/10">
+              <th className="p-4 font-bold sticky left-0 bg-[#0c0c0e] z-20 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
+              {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
+                <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header">
+                  <div className="font-bold text-zinc-200">{k.name}</div>
+                  <div className="mt-1 opacity-60 flex justify-center gap-1">
                      <span className="bg-white/5 px-1 rounded">{k.weight}%</span>
                      <span className="bg-white/5 px-1 rounded">Target: {k.target}</span>
                   </div>
+                  {/* Tooltip for Gates */}
+                  {k.gates && (
+                    <div className="absolute top-full left-0 w-full bg-zinc-900 border border-white/20 p-2 z-50 hidden group-hover/header:block text-left shadow-xl rounded-b">
+                      <div className="text-[9px] text-[#E2231A] font-bold mb-1">GATEWAY LOGIC:</div>
+                      {k.gates.map((g, i) => (
+                        <div key={i} className="text-[9px] text-zinc-400 flex justify-between">
+                          <span>&le; {g.threshold}:</span>
+                          <span className="text-white">{g.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </th>
               ))}
-              <th className="p-3 text-center text-[#E2231A] font-black text-lg">Total</th>
-              {isManager && <th className="p-3 text-center w-12"><Crown size={14}/></th>}
-            </tr>
+              <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10">Total Score</th>
+          <th className="p-3 text-center w-20 border-l border-white/10">Actions</th>            </tr>
           </thead>
           <tbody>
             {rows.map((row, idx) => (
               <tr key={row.id} style={{ animationDelay: `${idx * 50}ms` }} className="border-b border-white/5 hover:bg-white/5 transition-colors group animate-slide-up">
                 <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-zinc-800 to-zinc-900 flex items-center justify-center text-xs font-bold text-zinc-400 border border-white/10 group-hover:border-[#E2231A]/50 transition-colors">
-                      {row.name.charAt(0)}
-                    </div>
+                    {/* GAMIFICATION BADGE */}
+                    {(() => {
+                       const lvl = getAgentLevel(row.lifetimeXP);
+                       const rank = getAgentRank(lvl);
+                       return (
+                         <div className={cn("w-10 h-10 rounded-lg flex flex-col items-center justify-center border transition-colors relative overflow-hidden", rank.bg, rank.border)}>
+                            <span className={cn("text-[8px] uppercase font-black tracking-widest", rank.color)}>{rank.name}</span>
+                            <span className="text-sm font-bold text-white">{lvl}</span>
+                         </div>
+                       );
+                    })()}
+    
                     <div>
                       <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
                       <div className="flex flex-wrap gap-1 mt-1">
@@ -766,18 +1133,24 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     </div>
                   </div>
                 </td>
+                {/* We must map flat kpiResults, but they are already in correct order because we mapped kpis in row generation */}
                 {row.kpiResults.map(res => (
-                  <td key={res.id} className="p-3 text-center align-middle relative">
+                  <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
                     {isManager ? (
                       <input 
                         type="number" 
                         value={res.val || ''}
                         onChange={(e) => updateScore(row.id, res.id, e.target.value)}
-                        className="bg-black/40 border border-white/10 w-20 text-center text-xs p-2 rounded focus:border-[#E2231A] outline-none text-white transition-all focus:scale-105"
+                        className={cn(
+                          "bg-black/40 border w-20 text-center text-xs p-2 rounded outline-none transition-all focus:scale-105",
+                          res.weighted === 0 && res.val ? "border-red-500 text-red-500" : "border-white/10 text-white focus:border-[#E2231A]"
+                        )}
                         placeholder="-"
                       />
                     ) : (
-                      <span className="font-mono text-sm font-bold">{res.val || '-'}</span>
+                      <span className={cn("font-mono text-sm font-bold", res.weighted === 0 && res.val ? "text-red-500" : "text-white")}>
+                        {res.val || '-'}
+                      </span>
                     )}
                     {res.val && (
                       <div className="absolute bottom-2 left-4 right-4 h-0.5 bg-zinc-800 rounded-full overflow-hidden">
@@ -786,24 +1159,39 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     )}
                   </td>
                 ))}
-                <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center">
+                <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center border-l border-white/10">
                   <span className={cn(row.totalScore >= 100 ? "text-[#E2231A] drop-shadow-[0_0_10px_rgba(226,35,26,0.5)]" : "text-white")}>
                     {row.totalScore.toFixed(1)}%
                   </span>
                 </td>
-                {isManager && (
-                  <td className="p-3 text-center relative group/menu">
-                     <button className="p-2 hover:bg-white/10 rounded-full text-zinc-600 hover:text-yellow-500 transition-all"><Crown size={16}/></button>
-                     <div className="absolute right-10 top-0 mt-0 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left transform translate-x-4 group-hover/menu:translate-x-0">
-                        <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
-                        {awardsList.map(a => (
-                          <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
-                            {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
-                          </button>
-                        ))}
-                     </div>
-                  </td>
-                )}
+                // PASTE YOUR NEW CODE HERE
+<td className="p-3 text-center relative group/menu border-l border-white/10">
+   <div className="flex items-center justify-center gap-1">
+      {/* PDF Export Button */}
+      <button 
+        onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, activeTeamId)}
+        className="p-2 hover:bg-white/10 rounded-full text-zinc-600 hover:text-[#E2231A] transition-all"
+        title="Download PDF Report"
+      >
+        <FileSpreadsheet size={16}/>
+      </button>
+
+      {/* Manager Menu (Only for Managers) */}
+      {isManager && (
+        <>
+           <button className="p-2 hover:bg-white/10 rounded-full text-zinc-600 hover:text-yellow-500 transition-all"><Crown size={16}/></button>
+           <div className="absolute right-10 top-0 mt-0 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left transform translate-x-4 group-hover/menu:translate-x-0">
+              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
+              {awardsList.map(a => (
+                <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
+                  {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
+                </button>
+              ))}
+           </div>
+        </>
+      )}
+   </div>
+</td>
               </tr>
             ))}
           </tbody>
@@ -876,8 +1264,7 @@ const Leaderboard = ({ members, kpis, data }) => {
     return members.map(m => {
       const p = data[m.id] || { actuals: {} };
       let total = 0;
-      kpis.forEach(k => { total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight); });
-      return { ...m, total };
+      kpis.forEach(k => { total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.gates); });      return { ...m, total };
     }).sort((a,b) => b.total - a.total).slice(0, 5);
   }, [members, kpis, data]);
 
