@@ -34,14 +34,19 @@ import {
 // --- STYLES & ANIMATIONS ---
 const GlobalStyles = () => (
   <style>{`
-    /* FORCE FULL SCREEN */
-    html, body, #root {
+    /* UPDATED LAYOUT STYLES */
+    html, body {
       width: 100%;
-      height: 100%;
+      min-height: 100vh; /* Allow scroll */
       margin: 0;
       padding: 0;
-      overflow-x: hidden;
       background-color: #050505;
+      overflow-x: hidden;
+    }
+    #root {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
     @keyframes float { 0% { transform: translateY(0px); } 50% { transform: translateY(-10px); } 100% { transform: translateY(0px); } }
@@ -189,20 +194,35 @@ const calculateScore = (actual, target, direction, weight, gates) => {
   if (isNaN(act)) return 0;
 
   // 1. Check Gates (Gateway Logic)
-  // If gates exist, we check if the actual value passes the thresholds.
   if (gates && gates.length > 0) {
-    // Sort gates by threshold ascending
     const sortedGates = [...gates].sort((a, b) => a.threshold - b.threshold);
-    let multiplier = 0;
+    let multiplier = 0; // Default to 0 (fail) if no gate matches
     
     // Find the range the actual value falls into
     for (const gate of sortedGates) {
       if (act <= gate.threshold) {
         multiplier = gate.multiplier;
-        break; // Found our tier
+        break; 
       }
     }
-    // --- GAMIFICATION UTILS ---
+    return weight * multiplier;
+  }
+
+  // 2. Standard Calculation
+  const tgt = parseFloat(target) || 1; 
+  let scorePct = 0;
+  
+  if (direction === 'higher') {
+    scorePct = (act / tgt) * 100;
+  } else { 
+    if (act === 0) scorePct = 120; 
+    else scorePct = (tgt / act) * 100; 
+  }
+
+  return (Math.min(scorePct, 150) / 100) * weight;
+};
+
+// --- GAMIFICATION UTILS (MOVED OUTSIDE) ---
 const getAgentLevel = (xp) => Math.floor((xp || 0) / 1000) + 1;
 
 const getAgentRank = (level) => {
@@ -211,30 +231,6 @@ const getAgentRank = (level) => {
   if (level >= 5) return { name: 'Silver', color: 'text-zinc-300', border: 'border-zinc-500/50', bg: 'bg-zinc-800/50' };
   return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
 };
-    
-    // If direction is lower (e.g. absences), being lower is good.
-    // If we exceeded all gates (e.g. > 9.09), multiplier stays 0 (or whatever the last gate was if logic implies)
-    // Based on user request: > 9.09 is 0%.
-    return weight * multiplier;
-  }
-
-  // 2. Standard Calculation (if no gates)
-  const tgt = parseFloat(target) || 1; 
-  let scorePct = 0;
-  
-  if (direction === 'higher') {
-    // Higher is better (Revenue)
-    scorePct = (act / tgt) * 100;
-  } else { 
-    // Lower is better (AHT, Defects)
-    if (act === 0) scorePct = 120; // Bonus for 0 defects/absences if no gates defined
-    else scorePct = (tgt / act) * 100; 
-  }
-
-  // Cap at 150% achievement
-  return (Math.min(scorePct, 150) / 100) * weight;
-};
-
 // --- CONTEXTS ---
 const AuthContext = createContext(null);
 const DataContext = createContext(null);
@@ -387,7 +383,7 @@ const MainLayout = () => {
         </div>
 
         <Navbar view={view} setView={setView} />
-        <main className="w-full max-w-[1920px] mx-auto p-6 md:p-8 relative z-10 animate-fade-in">
+        <main className="w-full max-w-[1600px] mx-auto px-4 md:px-12 py-8 relative z-10 animate-fade-in flex flex-col gap-6 flex-1">
           {view === 'admin_dash' && <AdminDashboard />}
           {view === 'lobby' && <LobbyView setView={setView} />}
           {view === 'create_team' && <CreateTeamView setView={setView} />}
@@ -1164,7 +1160,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     {row.totalScore.toFixed(1)}%
                   </span>
                 </td>
-                // PASTE YOUR NEW CODE HERE
+               
 <td className="p-3 text-center relative group/menu border-l border-white/10">
    <div className="flex items-center justify-center gap-1">
       {/* PDF Export Button */}
