@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, createContext, useContext, useCall
 import { initializeApp } from 'firebase/app';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+
 import { 
   getAuth, 
   signInAnonymously, 
@@ -28,7 +29,7 @@ import {
   Save, Medal, Activity, Search, Crown, AlertTriangle, Loader, 
   ArrowUpRight, Eye, Edit3, Shield, LayoutGrid, Mail, Upload, FileSpreadsheet, 
   TrendingUp, TrendingDown, Target, Lock, ChevronRight, BarChart3, Calculator,
-  Info, Zap, Sparkles, Download 
+  Info, Zap, Sparkles, Download, Trash2
 } from 'lucide-react';
 
 // --- STYLES & ANIMATIONS ---
@@ -78,43 +79,75 @@ const GlobalStyles = () => (
     ::-webkit-scrollbar-thumb:hover { background: #E2231A; }
 
 
-    /* 1. Grid container for the Target/Direction row */
-.kpi-row-split {
+   /* REPLACE existing .kpi-row-split and input styles with this */
+
+/* Modern Grid Layout for Config */
+.config-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr; /* Exact 50/50 split */
-  gap: 20px; /* Space between the two boxes */
-  align-items: end; /* Aligns bottoms so labels don't offset inputs */
-  width: 100%;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  align-items: start;
 }
 
-/* 2. Standardize Input Heights */
-.kpi-input, 
-.kpi-select {
-  width: 100%;
-  height: 48px; /* Fixed height ensures they match perfectly */
-  padding: 0 12px;
-  background-color: #2a2a2a; /* Dark theme match */
-  border: 1px solid #444;
-  border-radius: 6px;
-  color: white;
-  box-sizing: border-box; /* Includes padding in width/height calculation */
+.kpi-card-styled {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
 }
 
-/* 3. Label Styling */
-.kpi-label {
+.kpi-card-styled:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(226, 35, 26, 0.3);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+}
+
+.kpi-input-group label {
   display: block;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #888;
-  margin-bottom: 8px;
+  font-size: 10px;
   text-transform: uppercase;
+  font-weight: 800;
+  color: #71717a; /* zinc-500 */
+  margin-bottom: 6px;
+  letter-spacing: 0.05em;
 }
+
+.kpi-input-styled, .kpi-select-styled {
+  width: 100%;
+  background: #09090b;
+  border: 1px solid #27272a;
+  color: white;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.kpi-input-styled:focus, .kpi-select-styled:focus {
+  border-color: #E2231A;
+  box-shadow: 0 0 0 1px #E2231A;
+}
+
+.btn-icon-danger {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 8px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+.btn-icon-danger:hover { background: #ef4444; color: white; }
+
   `}</style>
 );
 
 // --- CONFIGURATION ---
 const firebaseConfig = {
-  apiKey: "import.meta.env.VITE_FIREBASE_API_KEY",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "lenovo-kpi-app.firebaseapp.com",
   projectId: "lenovo-kpi-app",
   storageBucket: "lenovo-kpi-app.firebasestorage.app",
@@ -230,37 +263,60 @@ const parseNameFromEmail = (email) => {
   const parts = clean.split('.');
   return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 };
-const calculateScore = (actual, target, direction, weight, gates) => {
-  const act = parseFloat(actual);
-  if (isNaN(act)) return 0;
+// --- UPDATED CALCULATION LOGIC ---
 
-  // 1. Check Gates (Gateway Logic)
-  if (gates && gates.length > 0) {
-    const sortedGates = [...gates].sort((a, b) => a.threshold - b.threshold);
-    let multiplier = 0; // Default to 0 (fail) if no gate matches
-    
-    // Find the range the actual value falls into
-    for (const gate of sortedGates) {
-      if (act <= gate.threshold) {
-        multiplier = gate.multiplier;
-        break; 
-      }
-    }
-    return weight * multiplier;
+// 1. Calculate Individual KPI Score
+const calculateScore = (actual, target, direction, weight, type = 'value') => {
+  // Handle Pass/Fail (Binary) KPIs
+  if (type === 'binary') {
+    // If actual is "true", "pass", "1" -> Full Weight. Else 0.
+    const isPass = actual === true || actual === 'true' || actual === 'pass' || actual === 1;
+    return isPass ? parseFloat(weight) : 0;
   }
 
-  // 2. Standard Calculation
-  const tgt = parseFloat(target) || 1; 
-  let scorePct = 0;
+  // Handle Numeric KPIs
+  const act = parseFloat(actual);
+  if (isNaN(act)) return 0;
   
+  const tgt = parseFloat(target) || 1;
+  let scorePct = 0;
+
   if (direction === 'higher') {
     scorePct = (act / tgt) * 100;
   } else { 
-    if (act === 0) scorePct = 120; 
+    // Lower is better logic
+    if (act === 0) scorePct = 120; // Perfect score for 0 errors
     else scorePct = (tgt / act) * 100; 
   }
 
+  // Cap at 150% performance per KPI
   return (Math.min(scorePct, 150) / 100) * weight;
+};
+
+// 2. New Helper: Calculate Total with Global Gateways
+const calculateFinalScore = (kpis, actuals, gateways = []) => {
+  let totalScore = 0;
+  
+  // Step A: Sum individual KPIs
+  kpis.forEach(k => {
+    totalScore += calculateScore(actuals?.[k.id], k.target, k.direction, k.weight, k.type);
+  });
+
+  // Step B: Apply Global Gateways
+  // Example Actuals for gateways: { "gateway_attendance": "fail" }
+  gateways.forEach(g => {
+    const gateVal = actuals?.[g.id];
+    // If the gateway is triggered (e.g., Value is 'fail')
+    if (gateVal === 'fail' || gateVal === false || gateVal === 'false') {
+      if (g.penalty === 'zero') {
+        totalScore = 0; // The "Kill Switch"
+      } else if (g.penalty === 'deduct') {
+        totalScore -= parseFloat(g.weight || 0); // Flat point deduction
+      }
+    }
+  });
+
+  return Math.max(0, totalScore); // Never go below 0
 };
 
 // --- GAMIFICATION UTILS (MOVED OUTSIDE) ---
@@ -313,6 +369,19 @@ const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const { showToast } = useContext(ToastContext);
 
+  // --- FIX START: Safety Timeout ---
+  // If the database takes longer than 5 seconds, force the app to load.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (loading) {
+        console.warn("System hung on initialization. Forcing load...");
+        setLoading(false);
+      }
+    }, 5000); // 5 seconds timeout
+    return () => clearTimeout(timer);
+  }, [loading]);
+  // --- FIX END ---
+
   useEffect(() => {
     if (configError) return; // Don't try auth if config failed
 
@@ -340,17 +409,26 @@ const AuthProvider = ({ children }) => {
     if (!emailToQuery) { setLoading(false); return; }
 
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('email', '==', emailToQuery));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      if (!snap.empty) {
-        const docData = snap.docs[0];
-        setProfile({ id: docData.id, ...docData.data() });
-        localStorage.setItem('lenovo_user_email', emailToQuery);
-      } else {
+    // FIX: Added error handler to prevent infinite loading if DB fails
+    const unsubscribe = onSnapshot(q, 
+      (snap) => {
+        if (!snap.empty) {
+          const docData = snap.docs[0];
+          setProfile({ id: docData.id, ...docData.data() });
+          localStorage.setItem('lenovo_user_email', emailToQuery);
+        } else {
+          localStorage.removeItem('lenovo_user_email');
+          setProfile(null);
+        }
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Database Connection Error:", error);
+        // Ensure we stop loading even if there is an error
+        setLoading(false);
         localStorage.removeItem('lenovo_user_email');
-        setProfile(null);
       }
-      setLoading(false);
-    });
+    );
     return () => unsubscribe();
   }, [user]);
 
@@ -1141,7 +1219,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        const weighted = calculateScore(val, k.target, k.direction, k.weight, k.gates);
+        // Ensure we use the updated calculateScore logic here
+        const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type);
         totalScore += weighted;
         return { ...k, val, weighted };
       });
@@ -1163,22 +1242,14 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { ...current, awards: newAwards }, { merge: true });
   };
 
-  // NEW: CSV EXPORT FUNCTION
   const handleCSVExport = () => {
     if (!members.length) return;
-    
-    // 1. Create Headers
     const headers = ['Email', 'Name', ...kpis.map(k => k.name)].join(',');
-    
-    // 2. Create Rows
     const rows = members.map(m => {
       const p = data[m.id] || { actuals: {} };
-      // Escape commas in names/emails if necessary, simple join here
       const scores = kpis.map(k => p.actuals?.[k.id] || '').join(',');
       return `${m.email},${m.name},${scores}`;
     }).join('\n');
-
-    // 3. Download
     const blob = new Blob([headers + '\n' + rows], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -1229,7 +1300,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
           <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
           {isManager && (
             <div className="flex gap-2">
-              {/* NEW: Export Button */}
               <button 
                  onClick={handleCSVExport}
                  className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all"
@@ -1237,7 +1307,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
               >
                 <Download size={14} /> Export
               </button>
-
               <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
                 <Upload size={14} /> Import CSV
                 <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
@@ -1267,19 +1336,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                   <div className="font-bold text-zinc-200">{k.name}</div>
                   <div className="mt-1 opacity-60 flex justify-center gap-1">
                      <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
-                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">T: {k.target}</span>
+                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.type === 'binary' ? 'P/F' : `T: ${k.target}`}</span>
                   </div>
-                  {k.gates && (
-                    <div className="absolute top-full left-0 w-full bg-zinc-900 border border-white/20 p-2 z-50 hidden group-hover/header:block text-left shadow-xl rounded-b">
-                      <div className="text-[9px] text-[#E2231A] font-bold mb-1">GATEWAY LOGIC:</div>
-                      {k.gates.map((g, i) => (
-                        <div key={i} className="text-[9px] text-zinc-400 flex justify-between">
-                          <span>&le; {g.threshold}:</span>
-                          <span className="text-white">{g.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </th>
               ))}
               <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10">Total Score</th>
@@ -1309,27 +1367,47 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
                     </div>
                   </div>
                 </td>
+                
+                {/* --- FIX START: KPI INPUTS (Binary vs Numeric) --- */}
                 {row.kpiResults.map(res => (
                   <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
                     {isManager ? (
-                      // UPDATED: Using DebouncedInput
-                      <DebouncedInput 
-                        value={res.val} 
-                        onSave={(val) => updateScore(row.id, res.id, val)}
-                        placeholder="-" 
-                      />
+                      res.type === 'binary' ? (
+                        // RENDER TOGGLE FOR BINARY KPIS
+                        <select
+                          value={res.val || ''}
+                          onChange={(e) => updateScore(row.id, res.id, e.target.value)}
+                          className={cn(
+                            "bg-black/40 border text-[10px] font-bold uppercase p-2 rounded outline-none w-24 text-center cursor-pointer",
+                            res.val === 'pass' ? "border-green-500/50 text-green-500" : 
+                            res.val === 'fail' ? "border-red-500/50 text-red-500" : "border-white/10 text-zinc-500"
+                          )}
+                        >
+                          <option value="">-</option>
+                          <option value="pass">PASS</option>
+                          <option value="fail">FAIL</option>
+                        </select>
+                      ) : (
+                        // RENDER NUMBER INPUT FOR NUMERIC KPIS
+                        <DebouncedInput 
+                          value={res.val} 
+                          onSave={(val) => updateScore(row.id, res.id, val)}
+                          placeholder="-" 
+                        />
+                      )
                     ) : (
-                      <span className={cn("font-mono text-sm font-bold", res.weighted === 0 && res.val ? "text-red-500" : "text-white")}>
-                        {res.val || '-'}
+                      // READ ONLY VIEW
+                      <span className={cn("font-mono text-sm font-bold", 
+                        res.val === 'fail' ? "text-red-500" : 
+                        res.val === 'pass' ? "text-green-500" : "text-white"
+                      )}>
+                        {res.val === 'pass' ? 'PASS' : res.val === 'fail' ? 'FAIL' : (res.val || '-')}
                       </span>
-                    )}
-                    {res.val && (
-                      <div className="absolute bottom-2 left-4 right-4 h-0.5 bg-zinc-800 rounded-full overflow-hidden">
-                         <div className={cn("h-full transition-all duration-1000", res.weighted >= (res.weight * 0.9) ? "bg-green-500" : "bg-[#E2231A]")} style={{ width: `${Math.min((res.weighted/res.weight)*100, 100)}%` }}></div>
-                      </div>
                     )}
                   </td>
                 ))}
+                {/* --- FIX END --- */}
+
                 <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center border-l border-white/10">
                   <span className={cn(row.totalScore >= 100 ? "text-[#E2231A] drop-shadow-[0_0_10px_rgba(226,35,26,0.5)]" : "text-white")}>
                     {row.totalScore.toFixed(1)}%
@@ -1372,95 +1450,234 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
   );
 };
 
-const KpiConfigurator = ({ userRole, currentTeam }) => {
-  // FIX: Use currentTeam.kpis or fallback to defaults. Initialize gateways as empty array.
+const KpiConfigurator = ({ currentTeam }) => {
+  const { showToast } = useContext(ToastContext);
+  const [loading, setLoading] = useState(false);
+  
+  // Initialize state with existing data or defaults
   const [kpis, setKpis] = useState(currentTeam?.kpis || []);
   const [gateways, setGateways] = useState(currentTeam?.gateways || []);
 
-  const removeGateway = (id) => {
-    setGateways(gateways.filter(g => g.id !== id));
-  };
-  // --- ACTIONS ---
-
-  // Add a new empty KPI card
+  // --- KPI HANDLERS ---
   const addKpi = () => {
-    setKpis([...kpis, { id: Date.now(), name: '', weight: 0, target: 0, direction: 'higher' }]);
+    setKpis([...kpis, { 
+      id: `kpi_${Date.now()}`, 
+      name: '', 
+      weight: 10, 
+      target: 100, 
+      direction: 'higher', 
+      type: 'value' // 'value' or 'binary'
+    }]);
   };
 
-  // Add a new Gateway
+  const updateKpi = (id, field, value) => {
+    setKpis(kpis.map(k => k.id === id ? { ...k, [field]: value } : k));
+  };
+
+  const removeKpi = (id) => setKpis(kpis.filter(k => k.id !== id));
+
+  // --- GATEWAY HANDLERS ---
   const addGateway = () => {
-    setGateways([...gateways, { id: Date.now(), name: '', condition: '', impact: 'zero' }]);
+    setGateways([...gateways, { 
+      id: `gate_${Date.now()}`, 
+      name: '', 
+      penalty: 'zero', // 'zero' or 'deduct'
+      weight: 0 // Only used if deduct
+    }]);
   };
 
-  // Remove item
-  const removeKpi = (id) => {
-    setKpis(kpis.filter(k => k.id !== id));
+  const updateGateway = (id, field, value) => {
+    setGateways(gateways.map(g => g.id === id ? { ...g, [field]: value } : g));
+  };
+
+  const removeGateway = (id) => setGateways(gateways.filter(g => g.id !== id));
+
+  // --- SAVE ---
+  const handleSave = async () => {
+    setLoading(true);
+    try {
+      // Validate Weights
+      const totalWeight = kpis.reduce((sum, k) => sum + parseFloat(k.weight || 0), 0);
+      if (totalWeight !== 100) {
+        showToast(`Warning: Total Weight is ${totalWeight}% (Should be 100%)`, 'error');
+        // We allow saving but warn the user
+      }
+
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', currentTeam.id), {
+        kpis,
+        gateways,
+        lastUpdated: serverTimestamp()
+      });
+      showToast("Configuration Saved Successfully");
+    } catch (err) {
+      console.error(err);
+      showToast("Save Failed", 'error');
+    }
+    setLoading(false);
   };
 
   return (
-    <div className="dashboard-container">
+    <div className="space-y-8 animate-slide-up pb-10">
       
-      {/* SECTION 1: GATEWAYS (Global Rules) */}
-      <div className="section-header">
-        <h3>Global Gateways</h3>
-        <p className="sub-text">These rules impact the final score of all KPIs.</p>
+      {/* HEADER */}
+      <div className="flex justify-between items-end border-b border-white/10 pb-4">
+        <div>
+           <h3 className="text-xl font-black text-white uppercase tracking-tight">System Configuration</h3>
+           <p className="text-zinc-500 text-xs mt-1">Define success metrics and global failure rules.</p>
+        </div>
+        <Button onClick={handleSave} disabled={loading} className={loading ? "opacity-50" : ""}>
+          {loading ? <Loader className="animate-spin" size={16}/> : <Save size={16}/>}
+          Save Changes
+        </Button>
       </div>
 
-      {gateways.map((gateway, index) => (
-        <div key={gateway.id} className="gateway-card">
-           <input placeholder="Gateway Name (e.g. Attendance)" value={gateway.name} />
-           <select value={gateway.impact}>
-              <option value="zero">Set Score to 0</option>
-              <option value="halve">Cut Score by 50%</option>
-           </select>
-           <button onClick={() => removeGateway(gateway.id)} className="btn-delete">Trash</button>
+      {/* SECTION 1: GLOBAL GATEWAYS */}
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <div className="text-xs font-bold text-[#E2231A] uppercase tracking-widest flex items-center gap-2">
+            <Shield size={14}/> Global Gateways
+          </div>
+          <button onClick={addGateway} className="text-xs text-zinc-400 hover:text-white flex items-center gap-1 transition-colors">
+            <Plus size={12}/> Add Rule
+          </button>
         </div>
-      ))}
-      <button onClick={addGateway} className="btn-add">+ Add Gateway</button>
 
-      <hr />
+        {gateways.length === 0 && <div className="text-zinc-600 text-xs italic border border-dashed border-white/10 p-4 rounded text-center">No global failure rules defined.</div>}
 
-      {/* SECTION 2: DYNAMIC KPI LIST */}
-      <div className="section-header">
-        <h3>KPI Metrics</h3>
+        {gateways.map((g) => (
+          <div key={g.id} className="kpi-card-styled border-l-4 border-l-[#E2231A] flex gap-4 items-end">
+            <div className="flex-1 space-y-2">
+              <div className="kpi-input-group">
+                <label>Gateway Rule Name</label>
+                <input 
+                  className="kpi-input-styled" 
+                  placeholder="e.g. Zero Tolerance Policy"
+                  value={g.name} 
+                  onChange={e => updateGateway(g.id, 'name', e.target.value)} 
+                />
+              </div>
+            </div>
+            
+            <div className="w-40 space-y-2">
+              <div className="kpi-input-group">
+                <label>Penalty Impact</label>
+                <select 
+                  className="kpi-select-styled" 
+                  value={g.penalty} 
+                  onChange={e => updateGateway(g.id, 'penalty', e.target.value)}
+                >
+                  <option value="zero">Zero Out Score (0%)</option>
+                  <option value="deduct">Deduct Points</option>
+                </select>
+              </div>
+            </div>
+
+            {g.penalty === 'deduct' && (
+              <div className="w-24 space-y-2 animate-fade-in">
+                <div className="kpi-input-group">
+                  <label>Ded. %</label>
+                  <input 
+                    type="number" 
+                    className="kpi-input-styled text-center text-red-500 font-bold" 
+                    value={g.weight} 
+                    onChange={e => updateGateway(g.id, 'weight', e.target.value)} 
+                  />
+                </div>
+              </div>
+            )}
+
+            <button onClick={() => removeGateway(g.id)} className="btn-icon-danger mb-1"><Trash2 size={16}/></button>
+          </div>
+        ))}
       </div>
 
-      {kpis.map((kpi, index) => (
-        <div key={kpi.id} className="kpi-card">
-          {/* Top Row: Name & Weight */}
-          <div className="row-split">
-             <div className="field">
-               <label>Name</label>
-               <input value={kpi.name} />
-             </div>
-             <div className="field">
-               <label>Weight %</label>
-               <input type="number" value={kpi.weight} />
-             </div>
+      {/* SECTION 2: KPIS */}
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+           <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+            <Target size={14}/> Performance Metrics (KPIs)
           </div>
-
-          {/* Bottom Row: Target & Direction (FIXED LAYOUT) */}
-          <div className="kpi-row-split">
-             <div className="field">
-               <label className="kpi-label">Target</label>
-               <input className="kpi-input" type="number" value={kpi.target} />
-             </div>
-             <div className="field">
-               <label className="kpi-label">Direction</label>
-               <select className="kpi-select" value={kpi.direction}>
-                 <option value="higher">Higher is Better</option>
-                 <option value="lower">Lower is Better</option>
-               </select>
-             </div>
-          </div>
-          
-          <button onClick={() => removeKpi(kpi.id)} className="btn-remove-kpi">Remove KPI</button>
+          <button onClick={addKpi} className="text-xs text-[#E2231A] hover:text-white flex items-center gap-1 transition-colors font-bold">
+            <Plus size={12}/> Add KPI
+          </button>
         </div>
-      ))}
 
-      {/* The "Add" Button replaces the 4-item limit */}
-      <button onClick={addKpi} className="btn-add-main">+ Add Another KPI</button>
+        {kpis.map((k) => (
+          <div key={k.id} className="kpi-card-styled">
+            <div className="config-grid">
+              
+              {/* Row 1: Basics */}
+              <div className="col-span-2 kpi-input-group">
+                <label>Metric Name</label>
+                <input 
+                  className="kpi-input-styled font-bold" 
+                  value={k.name} 
+                  onChange={e => updateKpi(k.id, 'name', e.target.value)} 
+                />
+              </div>
+              
+              <div className="kpi-input-group">
+                <label>Type</label>
+                <select 
+                  className="kpi-select-styled" 
+                  value={k.type || 'value'} 
+                  onChange={e => updateKpi(k.id, 'type', e.target.value)}
+                >
+                  <option value="value">Numeric Target</option>
+                  <option value="binary">Pass / Fail</option>
+                </select>
+              </div>
 
+              {/* Row 2: Logic (Changes based on Type) */}
+              <div className="kpi-input-group">
+                <label>Weight (%)</label>
+                <input 
+                  type="number" 
+                  className="kpi-input-styled text-[#E2231A] font-bold" 
+                  value={k.weight} 
+                  onChange={e => updateKpi(k.id, 'weight', e.target.value)} 
+                />
+              </div>
+
+              {k.type !== 'binary' ? (
+                <>
+                  <div className="kpi-input-group">
+                    <label>Target Value</label>
+                    <input 
+                      type="number" 
+                      className="kpi-input-styled" 
+                      value={k.target} 
+                      onChange={e => updateKpi(k.id, 'target', e.target.value)} 
+                    />
+                  </div>
+                  <div className="kpi-input-group">
+                    <label>Direction</label>
+                    <select 
+                      className="kpi-select-styled" 
+                      value={k.direction} 
+                      onChange={e => updateKpi(k.id, 'direction', e.target.value)}
+                    >
+                      <option value="higher">Higher is Better</option>
+                      <option value="lower">Lower is Better</option>
+                    </select>
+                  </div>
+                </>
+              ) : (
+                 <div className="col-span-2 flex items-center pt-6 px-4 bg-white/5 rounded-lg border border-dashed border-white/10">
+                    <span className="text-xs text-zinc-500 italic">Pass = 100% of Weight. Fail = 0%.</span>
+                 </div>
+              )}
+            </div>
+
+            <button 
+              onClick={() => removeKpi(k.id)} 
+              className="absolute top-4 right-4 text-zinc-600 hover:text-red-500 transition-colors"
+            >
+              <Trash2 size={16}/>
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
