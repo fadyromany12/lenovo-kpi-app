@@ -34,14 +34,15 @@ import {
 // --- STYLES & ANIMATIONS ---
 const GlobalStyles = () => (
   <style>{`
-    /* UPDATED LAYOUT STYLES */
+    /* UPDATED LAYOUT STYLES - PHASE 1 FIXES */
     html, body {
       width: 100%;
-      min-height: 100vh; /* Allow scroll */
+      min-height: 100vh;
       margin: 0;
       padding: 0;
       background-color: #050505;
-      overflow-x: hidden;
+      overflow-x: hidden; /* Prevent horizontal scroll on body */
+      scroll-behavior: smooth;
     }
     #root {
       min-height: 100vh;
@@ -58,16 +59,55 @@ const GlobalStyles = () => (
     .animate-slide-up { animation: slide-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
     .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
     
-    .glass-panel { background: rgba(24, 24, 27, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
-    .glass-card { background: linear-gradient(145deg, rgba(32,32,35,0.6) 0%, rgba(20,20,22,0.8) 100%); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); }
+    /* Improved Glass Effect */
+    .glass-panel { background: rgba(24, 24, 27, 0.6); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.08); }
+    .glass-card { 
+      background: linear-gradient(145deg, rgba(32,32,35,0.7) 0%, rgba(10,10,12,0.9) 100%); 
+      backdrop-filter: blur(20px); 
+      border: 1px solid rgba(255,255,255,0.05); 
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+    }
     
-    .hover-glow:hover { box-shadow: 0 0 15px rgba(226,35,26,0.3); border-color: rgba(226,35,26,0.5); }
+    .hover-glow:hover { box-shadow: 0 0 25px rgba(226,35,26,0.2); border-color: rgba(226,35,26,0.5); }
     
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    /* Sleek Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: #09090b; }
-    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; border: 2px solid #09090b; }
     ::-webkit-scrollbar-thumb:hover { background: #E2231A; }
+
+
+    /* 1. Grid container for the Target/Direction row */
+.kpi-row-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* Exact 50/50 split */
+  gap: 20px; /* Space between the two boxes */
+  align-items: end; /* Aligns bottoms so labels don't offset inputs */
+  width: 100%;
+}
+
+/* 2. Standardize Input Heights */
+.kpi-input, 
+.kpi-select {
+  width: 100%;
+  height: 48px; /* Fixed height ensures they match perfectly */
+  padding: 0 12px;
+  background-color: #2a2a2a; /* Dark theme match */
+  border: 1px solid #444;
+  border-radius: 6px;
+  color: white;
+  box-sizing: border-box; /* Includes padding in width/height calculation */
+}
+
+/* 3. Label Styling */
+.kpi-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #888;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
   `}</style>
 );
 
@@ -231,6 +271,44 @@ const getAgentRank = (level) => {
   if (level >= 5) return { name: 'Silver', color: 'text-zinc-300', border: 'border-zinc-500/50', bg: 'bg-zinc-800/50' };
   return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
 };
+
+const DashboardRouter = ({ user }) => {
+  
+  // 1. If Superadmin: Show Team Selector & Configuration
+  if (user.role === 'SUPER_ADMIN') {
+    return (
+      <div>
+        <div className="admin-bar">
+          <label>Viewing Settings For: </label>
+          <select onChange={(e) => loadTeamData(e.target.value)}>
+             <option value="team_alpha">Alpha Team</option>
+             <option value="team_beta">Beta Team</option>
+          </select>
+        </div>
+        
+        {/* Render the Editable Configurator from Step 2 */}
+        <KpiConfigurator readOnly={false} />
+      </div>
+    );
+  }
+
+  // 2. If Manager/Agent: Show "Wall of Fame" (Read Only)
+  return (
+    <div className="view-mode">
+      <h1>My Performance</h1>
+      
+      {/* Instead of forms, show charts/ranks */}
+      <WallOfFame teamId={user.teamId} />
+      <Leaderboard teamId={user.teamId} />
+      
+      {/* If they click "KPI Details", show the list but DISABLED */}
+      <div className="kpi-read-only-list">
+         {/* Render list without input fields, just text */}
+      </div>
+    </div>
+  );
+};
+
 // --- CONTEXTS ---
 const AuthContext = createContext(null);
 const DataContext = createContext(null);
@@ -377,9 +455,11 @@ const MainLayout = () => {
       <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-[#E2231A] selection:text-white w-full h-full">
         {/* Ambient Background */}
         <div className="fixed inset-0 pointer-events-none z-0">
-           <div className="absolute top-[-20%] right-[-10%] w-[800px] h-[800px] bg-[#E2231A] rounded-full blur-[150px] opacity-[0.08] animate-pulse"></div>
-           <div className="absolute bottom-[-20%] left-[-10%] w-[800px] h-[800px] bg-blue-900 rounded-full blur-[150px] opacity-[0.06]"></div>
-           <div className="absolute top-[20%] left-[20%] w-[400px] h-[400px] bg-purple-900 rounded-full blur-[120px] opacity-[0.05]"></div>
+           <div className="absolute top-[-20%] right-[-10%] w-[800px] h-[800px] bg-[#E2231A] rounded-full blur-[180px] opacity-[0.06] animate-pulse"></div>
+           <div className="absolute bottom-[-20%] left-[-10%] w-[900px] h-[900px] bg-blue-900 rounded-full blur-[200px] opacity-[0.04]"></div>
+           {/* Added extra depth layer */}
+           <div className="absolute top-[40%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-purple-900/10 rounded-full blur-[150px] mix-blend-screen"></div>
+           <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-overlay"></div>
         </div>
 
         <Navbar view={view} setView={setView} />
@@ -619,7 +699,7 @@ const LobbyView = ({ setView, embed = false }) => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-6">
         {teams.map((team, idx) => (
           <div 
             key={team.id} 
@@ -741,11 +821,12 @@ const TrendChart = ({ data, kpis }) => {
 };
 
 const InfoTooltip = ({ text }) => (
-  <div className="relative group inline-block ml-2 translate-y-0.5 z-10">
-    <Info size={14} className="text-zinc-500 hover:text-[#E2231A] cursor-help transition-colors" />
-    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-zinc-900 border border-white/10 p-2 rounded text-[10px] text-zinc-300 shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
+  <div className="relative group inline-block ml-2 translate-y-0.5 z-40">
+    <Info size={14} className="text-zinc-500 hover:text-[#E2231A] cursor-help transition-colors duration-300" />
+    {/* PHASE 1 FIX: Increased width (w-64), added z-[100], and improved positioning */}
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-64 bg-[#09090b] border border-white/20 p-3 rounded-xl text-[11px] leading-relaxed text-zinc-300 shadow-2xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 pointer-events-none transition-all duration-300 z-[100]">
       {text}
-      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-r border-b border-white/10 rotate-45"></div>
+      <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-[#09090b] border-r border-b border-white/20 rotate-45"></div>
     </div>
   </div>
 );
@@ -1088,25 +1169,26 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
       <div className="overflow-x-auto pb-12"> {/* Added padding bottom for dropdown space */}
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e] border-b border-white/5">
-              <th className="p-4 bg-[#0c0c0e] sticky left-0 z-20 w-56"></th>
+            <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
+              <th className="p-4 bg-[#0c0c0e]/95 sticky left-0 z-30 w-56 backdrop-blur-md"></th>
               {kpiStructure.map(([category, catKpis]) => (
-                <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518] text-[#E2231A] font-black tracking-widest">
+                <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518]/80 text-[#E2231A] font-black tracking-widest backdrop-blur-sm">
                   {category}
                 </th>
               ))}
-              <th className="bg-[#0c0c0e]"></th>
-              <th className="bg-[#0c0c0e]"></th>
+              <th className="bg-[#0c0c0e]/95 backdrop-blur-md"></th>
+              <th className="bg-[#0c0c0e]/95 backdrop-blur-md"></th>
             </tr>
-            <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e] border-b border-white/10">
-              <th className="p-4 font-bold sticky left-0 bg-[#0c0c0e] z-20 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
+            <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/10">
+              <th className="p-4 font-bold sticky left-0 bg-[#0c0c0e] z-30 shadow-[5px_0_20px_rgba(0,0,0,0.5)] border-r border-white/5">Agent Detail</th>
               {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
-                <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header">
+                <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header hover:bg-white/5 transition-colors">
                   <div className="font-bold text-zinc-200">{k.name}</div>
                   <div className="mt-1 opacity-60 flex justify-center gap-1">
-                     <span className="bg-white/5 px-1 rounded">{k.weight}%</span>
-                     <span className="bg-white/5 px-1 rounded">Target: {k.target}</span>
+                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
+                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">T: {k.target}</span>
                   </div>
+                  {/* Tooltip logic remains the same... */}
                   {k.gates && (
                     <div className="absolute top-full left-0 w-full bg-zinc-900 border border-white/20 p-2 z-50 hidden group-hover/header:block text-left shadow-xl rounded-b">
                       <div className="text-[9px] text-[#E2231A] font-bold mb-1">GATEWAY LOGIC:</div>
@@ -1126,7 +1208,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
           </thead>
           <tbody>
             {rows.map((row, idx) => (
-              <tr key={row.id} style={{ animationDelay: `${idx * 50}ms` }} className="border-b border-white/5 hover:bg-white/5 transition-colors group animate-slide-up">
+              <tr key={row.id} style={{ animationDelay: `${idx * 50}ms` }} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group animate-slide-up hover:scale-[1.005] hover:shadow-lg hover:z-10 relative">
                 <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
                   <div className="flex items-center gap-3">
                     {(() => {
@@ -1218,82 +1300,92 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList 
   );
 };
 
-const KPIConfigurator = ({ team }) => {
-  const [editing, setEditing] = useState(false);
-  const [kpis, setKpis] = useState(team.kpis || []);
-  const { showToast } = useContext(ToastContext);
+const KpiConfigurator = ({ userRole, currentTeam }) => {
+  const [kpis, setKpis] = useState(initialKpis);
+  const [gateways, setGateways] = useState(initialGateways);
 
-  const save = async () => {
-    const total = kpis.reduce((sum, k) => sum + parseFloat(k.weight || 0), 0);
-    if (Math.round(total) !== 100) { showToast(`Weights must equal 100%. Current: ${total}%`, 'error'); return; }
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', team.id), { kpis });
-    setEditing(false);
-    showToast("KPI Logic Updated Successfully");
+  // --- ACTIONS ---
+
+  // Add a new empty KPI card
+  const addKpi = () => {
+    setKpis([...kpis, { id: Date.now(), name: '', weight: 0, target: 0, direction: 'higher' }]);
   };
-  const update = (idx, field, val) => { const n = [...kpis]; n[idx][field] = val; setKpis(n); };
 
-  if (!editing) return (
-    <Card 
-      title="KPI Logic Engine" 
-      icon={Settings} 
-      action={<Button size="xs" variant="ghost" onClick={()=>setEditing(true)}><Edit3 size={14}/></Button>}
-    >
-      <div className="flex flex-col gap-2">
-         {team.kpis?.map(k => (
-           <div key={k.id} className="flex items-center justify-between bg-white/5 border border-white/5 px-3 py-2 rounded text-xs hover:border-[#E2231A]/40 transition-colors">
-              <div>
-                <span className="block font-bold text-[#E2231A]">{k.name}</span>
-                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{k.category || 'Core'}</span>
-              </div>
-              <div className="text-right">
-                <span className="text-white font-bold">{k.weight}%</span>
-                <span className="text-zinc-500 block text-[9px]">Target: {k.target}</span>
-              </div>
-           </div>
-         ))}
-      </div>
-    </Card>
-  );
+  // Add a new Gateway
+  const addGateway = () => {
+    setGateways([...gateways, { id: Date.now(), name: '', condition: '', impact: 'zero' }]);
+  };
+
+  // Remove item
+  const removeKpi = (id) => {
+    setKpis(kpis.filter(k => k.id !== id));
+  };
 
   return (
-    <Card title="Configure KPI Engine">
-      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
-        {kpis.map((k, i) => (
-          <div key={i} className="bg-white/5 p-3 rounded border border-white/5 space-y-3 animate-fade-in relative group">
-             <div className="flex gap-2">
-                <Input label="Name" value={k.name} onChange={e=>update(i,'name',e.target.value)} />
-                <div className="w-24"><Input label="Weight %" type="number" value={k.weight} onChange={e=>update(i,'weight',parseFloat(e.target.value))} /></div>
-             </div>
-             
-             {/* ADDED CATEGORY INPUT */}
-             <Input label="Category Group" value={k.category || ''} onChange={e=>update(i,'category',e.target.value)} placeholder="e.g. Core KPIs" />
+    <div className="dashboard-container">
+      
+      {/* SECTION 1: GATEWAYS (Global Rules) */}
+      <div className="section-header">
+        <h3>Global Gateways</h3>
+        <p className="sub-text">These rules impact the final score of all KPIs.</p>
+      </div>
 
-             <div className="grid grid-cols-2 gap-2">
-               <Input type="number" label="Target" value={k.target} onChange={e=>update(i,'target',parseFloat(e.target.value))} />
-               <div className="flex flex-col gap-2">
-                 <label className="text-[10px] uppercase font-bold text-zinc-500">Direction</label>
-                 <select value={k.direction} onChange={e=>update(i,'direction',e.target.value)} className="bg-black/50 border border-white/10 text-white text-xs p-3 rounded-lg focus:border-[#E2231A] outline-none w-full">
-                   <option value="higher">Higher is Better</option>
-                   <option value="lower">Lower is Better</option>
-                 </select>
-               </div>
+      {gateways.map((gateway, index) => (
+        <div key={gateway.id} className="gateway-card">
+           <input placeholder="Gateway Name (e.g. Attendance)" value={gateway.name} />
+           <select value={gateway.impact}>
+              <option value="zero">Set Score to 0</option>
+              <option value="halve">Cut Score by 50%</option>
+           </select>
+           <button onClick={() => removeGateway(gateway.id)} className="btn-delete">Trash</button>
+        </div>
+      ))}
+      <button onClick={addGateway} className="btn-add">+ Add Gateway</button>
+
+      <hr />
+
+      {/* SECTION 2: DYNAMIC KPI LIST */}
+      <div className="section-header">
+        <h3>KPI Metrics</h3>
+      </div>
+
+      {kpis.map((kpi, index) => (
+        <div key={kpi.id} className="kpi-card">
+          {/* Top Row: Name & Weight */}
+          <div className="row-split">
+             <div className="field">
+               <label>Name</label>
+               <input value={kpi.name} />
              </div>
-             
-             {/* GATE INDICATOR */}
-             {k.gates && k.gates.length > 0 && (
-               <div className="bg-red-900/20 border border-red-500/20 p-2 rounded flex items-center gap-2">
-                 <AlertTriangle size={12} className="text-[#E2231A]"/>
-                 <span className="text-[10px] text-red-200">Active Gateways: {k.gates.length} rules applied.</span>
-               </div>
-             )}
+             <div className="field">
+               <label>Weight %</label>
+               <input type="number" value={kpi.weight} />
+             </div>
           </div>
-        ))}
-      </div>
-      <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-white/10">
-        <Button variant="ghost" size="sm" onClick={()=>{setEditing(false); setKpis(team.kpis);}}>Cancel</Button>
-        <Button size="sm" onClick={save}>Apply Configuration</Button>
-      </div>
-    </Card>
+
+          {/* Bottom Row: Target & Direction (FIXED LAYOUT) */}
+          <div className="kpi-row-split">
+             <div className="field">
+               <label className="kpi-label">Target</label>
+               <input className="kpi-input" type="number" value={kpi.target} />
+             </div>
+             <div className="field">
+               <label className="kpi-label">Direction</label>
+               <select className="kpi-select" value={kpi.direction}>
+                 <option value="higher">Higher is Better</option>
+                 <option value="lower">Lower is Better</option>
+               </select>
+             </div>
+          </div>
+          
+          <button onClick={() => removeKpi(kpi.id)} className="btn-remove-kpi">Remove KPI</button>
+        </div>
+      ))}
+
+      {/* The "Add" Button replaces the 4-item limit */}
+      <button onClick={addKpi} className="btn-add-main">+ Add Another KPI</button>
+
+    </div>
   );
 };
 
@@ -1407,14 +1499,16 @@ const RequestJoinButton = ({ teamId, userId, userName }) => {
 };
 
 const Card = ({ title, icon: Icon, children, action, className, count }) => (
-  <div className={cn("glass-card rounded-2xl p-6 shadow-xl relative overflow-hidden group hover:shadow-[0_0_30px_rgba(0,0,0,0.5)] transition-all duration-500", className)}>
-    <div className="absolute top-0 left-0 w-1 h-full bg-[#E2231A] opacity-60 group-hover:opacity-100 transition-opacity"></div>
+  // PHASE 1 FIX: Removed 'overflow-hidden' so tooltips can extend outside
+  // Added specific rounded classes to the red accent line instead
+  <div className={cn("glass-card rounded-2xl p-6 shadow-xl relative group hover:shadow-[0_0_40px_rgba(0,0,0,0.6)] hover:border-white/10 transition-all duration-500 ease-out", className)}>
+    <div className="absolute top-0 left-0 w-1 h-full bg-[#E2231A] rounded-tl-2xl rounded-bl-2xl opacity-60 group-hover:opacity-100 transition-opacity"></div>
     {(title || action) && (
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-3">
-          {Icon && <div className="p-2.5 bg-white/5 rounded-lg text-[#E2231A] group-hover:scale-110 transition-transform"><Icon size={20}/></div>}
+          {Icon && <div className="p-2.5 bg-white/5 rounded-lg text-[#E2231A] group-hover:scale-110 group-hover:bg-[#E2231A]/10 transition-all duration-300"><Icon size={20}/></div>}
           <h3 className="text-xl font-bold text-white uppercase tracking-tight">{title}</h3>
-          {count !== undefined && <span className="bg-[#E2231A] text-white text-[10px] px-2 py-0.5 rounded-full font-bold shadow-lg">{count}</span>}
+          {count !== undefined && <span className="bg-[#E2231A] text-white text-[10px] px-2 py-0.5 rounded-full font-bold shadow-lg shadow-red-900/40">{count}</span>}
         </div>
         {action}
       </div>
@@ -1425,12 +1519,12 @@ const Card = ({ title, icon: Icon, children, action, className, count }) => (
 
 const Button = ({ children, variant='primary', size='md', fullWidth, className, ...props }) => {
   const variants = {
-    primary: "bg-[#E2231A] hover:bg-[#ff2f26] text-white shadow-[0_0_20px_rgba(226,35,26,0.2)] hover:shadow-[0_0_30px_rgba(226,35,26,0.4)] border border-transparent",
-    secondary: "bg-white/10 hover:bg-white/20 text-white border border-transparent",
-    outline: "bg-transparent border border-[#E2231A] text-[#E2231A] hover:bg-[#E2231A] hover:text-white",
+    primary: "bg-gradient-to-r from-[#E2231A] to-[#D91E15] hover:from-[#ff2f26] hover:to-[#E2231A] text-white shadow-[0_0_20px_rgba(226,35,26,0.3)] hover:shadow-[0_0_35px_rgba(226,35,26,0.6)] border border-transparent hover:-translate-y-0.5",
+    secondary: "bg-white/5 hover:bg-white/10 text-white border border-white/5 hover:border-white/20 backdrop-blur-md",
+    outline: "bg-transparent border border-[#E2231A] text-[#E2231A] hover:bg-[#E2231A] hover:text-white shadow-[0_0_10px_rgba(226,35,26,0.1)] hover:shadow-[0_0_20px_rgba(226,35,26,0.4)]",
     ghost: "bg-transparent hover:bg-white/5 text-zinc-400 hover:text-white",
-    success: "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20",
-    danger: "bg-red-950/50 text-red-400 border border-red-900/50 hover:bg-red-900/50 hover:text-white"
+    success: "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 hover:-translate-y-0.5",
+    danger: "bg-red-950/30 text-red-400 border border-red-900/50 hover:bg-red-900/50 hover:text-white hover:border-red-500"
   };
   const sizes = { xs: "text-[10px] px-2 py-1", sm: "text-xs px-4 py-2", md: "text-sm px-6 py-3" };
   return (
