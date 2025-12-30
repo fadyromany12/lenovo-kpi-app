@@ -905,18 +905,25 @@ const InfoTooltip = ({ text }) => (
 );
 
 const TeamDashboard = () => {
-  const { activeTeamId, members, performance, teams } = useContext(DataContext);
+  // FIX: Added 'setView' to context so we can redirect after deleting a team
+  const { activeTeamId, members, performance, teams, setView } = useContext(DataContext);
   const { profile } = useContext(AuthContext);
   const { showToast } = useContext(ToastContext);
   const [requests, setRequests] = useState([]);
-  const [history, setHistory] = useState([]); // Stores archived months
+  const [history, setHistory] = useState([]); 
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
   const isObserver = !isManager && profile.groupId !== activeTeamId;
-  // --- NEW: TEAM MANAGEMENT LOGIC ---
+  
+  // --- TEAM MANAGEMENT LOGIC ---
   const [isEditing, setIsEditing] = useState(false);
-  const [newName, setNewName] = useState(activeTeam?.name || '');
+  const [newName, setNewName] = useState(''); 
+
+  // FIX: Sync state with team name when data loads to prevent empty input
+  useEffect(() => {
+    if (activeTeam) setNewName(activeTeam.name);
+  }, [activeTeam]);
 
   const handleRename = async () => {
     if (!newName.trim()) return;
@@ -940,6 +947,8 @@ const TeamDashboard = () => {
     
     await batch.commit();
     showToast("Team Dissolved. Agents are now free agents.");
+    
+    // Redirect to Lobby
     setView('lobby');
   };
 
@@ -1013,6 +1022,16 @@ const TeamDashboard = () => {
            <div className="flex items-center gap-3 text-zinc-500 mb-2">
              <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
              {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
+             
+             {profile.role === 'super_user' && (
+               <select 
+                 className="bg-zinc-800 text-xs text-white p-1 rounded border border-white/10 ml-4"
+                 value={activeTeamId}
+                 onChange={(e) => setView(`team_view_${e.target.value}`)}
+               >
+                 {teams.map(t => <option key={t.id} value={t.id}>Jump to: {t.name}</option>)}
+               </select>
+             )}
            </div>
            
            {/* RENAME LOGIC */}
@@ -1106,7 +1125,15 @@ const TeamDashboard = () => {
         )}
 
         <div className={cn("space-y-8", isManager ? "xl:col-span-3" : "xl:col-span-4")}>
-          <PerformanceMatrix members={members} kpis={activeTeam.kpis || []} data={performance} isManager={isManager} teamId={activeTeam.id} awardsList={activeTeam.awards || []} onRemoveMember={handleRemoveMember} />
+          <PerformanceMatrix 
+            members={members} 
+            kpis={activeTeam.kpis || []} 
+            data={performance} 
+            isManager={isManager} 
+            teamId={activeTeam.id} 
+            awardsList={activeTeam.awards || []} 
+            onRemoveMember={handleRemoveMember} 
+          />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <Leaderboard members={members} kpis={activeTeam.kpis || []} data={performance} />
             <AwardWall members={members} data={performance} />
@@ -1813,11 +1840,11 @@ const LearningHub = () => {
   const [newPost, setNewPost] = useState({ title: '', content: '', tag: 'General' });
 
   useEffect(() => {
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), orderBy('createdAt', 'desc'));
-    // Note: requires "createdAt" index in Firestore, or remove orderBy until index is built
-    // For now, let's use client-side sort if index issues occur, or just standard fetch
-    return onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), (snap) => {
-      setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.createdAt?.seconds - a.createdAt?.seconds));
+    // Fix: Removed unused 'q' variable that caused the crash. 
+    // We are sorting client-side (.sort) so we don't need the index or orderBy right now.
+    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
+    return onSnapshot(ref, (snap) => {
+      setPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
     });
   }, []);
 
@@ -1922,8 +1949,11 @@ const Navbar = ({ view, setView }) => {
            <div className="text-2xl font-black uppercase tracking-tighter text-white cursor-pointer group" onClick={() => setView('lobby')}>
              Lenovo <span className="text-[#E2231A] group-hover:drop-shadow-[0_0_10px_rgba(226,35,26,0.8)] transition-all">Pulse</span>
            </div>
+           
            <div className="hidden md:flex items-center gap-1 bg-white/5 p-1.5 rounded-full border border-white/5">
               <NavBtn active={view === 'lobby'} onClick={()=>setView('lobby')} icon={LayoutGrid} label="Lobby" />
+              <NavBtn active={view === 'learning_hub'} onClick={()=>setView('learning_hub')} icon={BookOpen} label="Learning" />
+              
               {profile.role === 'super_user' && <NavBtn active={view === 'admin_dash'} onClick={()=>setView('admin_dash')} icon={Shield} label="Admin" />}
               {profile.groupId && <NavBtn active={view === 'team_dash'} onClick={()=>setView('team_dash')} icon={Users} label="My Team" />}
            </div>
@@ -1936,14 +1966,6 @@ const Navbar = ({ view, setView }) => {
            <Button variant="ghost" onClick={logout} className="text-zinc-500 hover:text-white hover:bg-white/10"><LogOut size={20}/></Button>
         </div>
       </div>
-      <div className="hidden md:flex items-center gap-1 bg-white/5 p-1.5 rounded-full border border-white/5">
-              <NavBtn active={view === 'lobby'} onClick={()=>setView('lobby')} icon={LayoutGrid} label="Lobby" />
-              {/* NEW BUTTON */}
-              <NavBtn active={view === 'learning_hub'} onClick={()=>setView('learning_hub')} icon={BookOpen} label="Learning" />
-              
-              {profile.role === 'super_user' && <NavBtn active={view === 'admin_dash'} onClick={()=>setView('admin_dash')} icon={Shield} label="Admin" />}
-              {profile.groupId && <NavBtn active={view === 'team_dash'} onClick={()=>setView('team_dash')} icon={Users} label="My Team" />}
-           </div>
     </nav>
   );
 };
