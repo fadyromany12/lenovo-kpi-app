@@ -46,6 +46,7 @@ const GlobalStyles = () => (
     }
     #root {
       min-height: 100vh;
+      width: 100%; /* FIX: Forces the app to fill the screen width */
       display: flex;
       flex-direction: column;
     }
@@ -353,31 +354,50 @@ const AuthProvider = ({ children }) => {
     return () => unsubscribe();
   }, [user]);
 
-  const login = async (email, role, secret) => {
+const login = async (email, role, secret) => {
     setLoading(true);
     if (role === 'super_user' && secret !== ADMIN_SECRET) {
       showToast("Access Denied: Invalid Secret", "error");
       setLoading(false); return;
     }
 
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('email', '==', email));
-    const snap = await getDocs(q);
-
-    if (!snap.empty) {
-      const existing = snap.docs[0].data();
-      if (role === 'super_user' && existing.role !== 'super_user') {
-         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', snap.docs[0].id), { role: 'super_user' });
-      }
-      localStorage.setItem('lenovo_user_email', email);
-    } else {
-      const name = parseNameFromEmail(email);
-      // FIXED: Manager role is now granted immediately so they can see the 'Create Team' UI
-      const finalRole = role; 
+    try {
+      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('email', '==', email));
+      const snap = await getDocs(q);
       
-      const newRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'users'));
-      await setDoc(newRef, { name, email, role: finalRole, joinedAt: serverTimestamp(), groupId: null });
+      let finalProfile = null;
 
+      if (!snap.empty) {
+        // User exists: fetch their data
+        const docSnap = snap.docs[0];
+        const existing = docSnap.data();
+        finalProfile = { id: docSnap.id, ...existing };
+
+        if (role === 'super_user' && existing.role !== 'super_user') {
+           await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', docSnap.id), { role: 'super_user' });
+           finalProfile.role = 'super_user';
+        }
+      } else {
+        // New user: create their data
+        const name = parseNameFromEmail(email);
+        const finalRole = role; // Manager role is granted immediately per your logic
+        
+        const newRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'users'));
+        const newData = { name, email, role: finalRole, joinedAt: serverTimestamp(), groupId: null };
+        
+        await setDoc(newRef, newData);
+        finalProfile = { id: newRef.id, ...newData };
+      }
+
+      // FIX: Manually update the state so the app knows we are done loading
       localStorage.setItem('lenovo_user_email', email);
+      setProfile(finalProfile);
+      setLoading(false); // <--- This line unblocks the "Initializing" screen
+
+    } catch (err) {
+      console.error("Login Error:", err);
+      showToast("Login Failed", "error");
+      setLoading(false);
     }
   };
 
@@ -952,7 +972,7 @@ const TeamDashboard = () => {
                  </div>
                )}
              </Card>
-             <KPIConfigurator currentteam={activeTeam} />
+             <KpiConfigurator currentTeam={activeTeam} />
            </div>
         )}
 
