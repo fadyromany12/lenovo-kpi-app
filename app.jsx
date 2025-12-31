@@ -1254,7 +1254,7 @@ const TeamDashboard = () => {
     }
   }, [activeTeamId]);
 
-  const handleArchiveMonth = async () => {
+const handleArchiveMonth = async () => {
     if (!confirm("Confirm Archive? This will:\n1. Save current stats to History\n2. Add XP to Agents\n3. This cannot be undone.")) return;
     
     const monthId = new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -1265,9 +1265,13 @@ const TeamDashboard = () => {
     members.forEach(m => {
       const p = performance[m.id] || { actuals: {} };
       let total = 0;
-     activeTeam.kpis.forEach(k => {
-  total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type);
-});
+      
+      // FIX: Ensure kpis exist before iterating
+      if (activeTeam.kpis) {
+        activeTeam.kpis.forEach(k => {
+          total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type);
+        });
+      }
       
       // Save for history
       statsSnapshot[m.id] = { 
@@ -1957,11 +1961,22 @@ const KpiConfigurator = ({ currentTeam }) => {
 
 const Leaderboard = ({ members, kpis, data }) => {
   const ranked = useMemo(() => {
+    // Safety check to prevent crash if data is missing
+    if (!members || !kpis) return [];
+
     return members.map(m => {
       const p = data[m.id] || { actuals: {} };
       let total = 0;
-      kpis.forEach(k => { total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type); });
-    }).sort((a,b) => b.total - a.total).slice(0, 5);
+      kpis.forEach(k => { 
+        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type); 
+      });
+      
+      // --- FIX: THIS RETURN STATEMENT WAS MISSING ---
+      return { ...m, total }; 
+      // ----------------------------------------------
+    })
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
   }, [members, kpis, data]);
 
   return (
