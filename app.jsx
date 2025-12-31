@@ -193,7 +193,7 @@ const ADMIN_SECRET = "lenovo2025";
 
 // --- DEFAULT DATA ---
 const DEFAULT_KPIS = [
-  // --- CORE KPIS ---
+  // --- CORE KPIS (75%) ---
   { 
     id: 'rev', 
     name: 'Revenue Target', 
@@ -225,27 +225,26 @@ const DEFAULT_KPIS = [
     note: '8 contacts/month' 
   },
   
-  // --- ADHERENCE & ATTENDANCE ---
+  // --- ADHERENCE & ATTENDANCE (25%) ---
   { 
     id: 'att_absent', 
-    name: 'Attendance (Sick/Emergency)', 
+    name: 'Attendance (Absenteeism)', 
     category: 'Adherence & Attendance',
     weight: 15, 
-    target: 0, 
-    type: 'percent', 
-    direction: 'lower', 
-    note: 'Gate System',
-    gates: [
-      { threshold: 4.55, multiplier: 1.0, label: 'Approved (100%)' },
-      { threshold: 9.09, multiplier: 0.5, label: 'Warning (50%)' },
-      { threshold: 100, multiplier: 0.0, label: 'Failed (0%)' } // Anything above 9.09 hits this
+    type: 'step', // UPDATED: Step-based logic
+    unit: '%',
+    note: '1 Day (4.55%) = 100%, 2 Days (9.09%) = 50%',
+    steps: [
+      { limit: 4.55, score: 100, label: '0-1 Days (100%)' }, // 0 to 4.55% Absenteeism = Full Score
+      { limit: 9.09, score: 50,  label: '2 Days (50%)' },    // 4.56% to 9.09% Absenteeism = Half Score
+      { limit: 9999, score: 0,   label: '3+ Days (0%)' }     // > 9.09% = Zero Score
     ]
   },
   { 
     id: 'adh_login', 
     name: 'Login/Out Adherence', 
     category: 'Adherence & Attendance',
-    weight: 5, // Split 10% between these two
+    weight: 5, 
     target: 3, 
     type: 'count', 
     direction: 'lower', 
@@ -283,18 +282,35 @@ const parseNameFromEmail = (email) => {
   const parts = clean.split('.');
   return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 };
-// --- UPDATED CALCULATION LOGIC ---
 
-// 1. Calculate Individual KPI Score
-const calculateScore = (actual, target, direction, weight, type = 'value') => {
-  // Handle Pass/Fail (Binary) KPIs
+// --- UPDATED CALCULATION ENGINE (With Auto-Sorting) ---
+const calculateScore = (actual, target, direction, weight, type = 'value', steps = []) => {
+  // 1. Handle Step/Gate Logic (Attendance)
+  if (type === 'step' && Array.isArray(steps) && steps.length > 0) {
+    const act = parseFloat(actual);
+    if (isNaN(act)) return 0;
+    
+    // CRITICAL FIX: Sort steps by limit (ascending) so we check <= 1 before <= 2
+    // We use [...steps] to create a copy and not mutate the original array
+    const sortedSteps = [...steps].sort((a, b) => parseFloat(a.limit) - parseFloat(b.limit));
+
+    // Iterate through sorted steps
+    for (const step of sortedSteps) {
+      if (act <= parseFloat(step.limit)) {
+        return (parseFloat(step.score) / 100) * weight;
+      }
+    }
+    // If actual value is higher than all steps (e.g., 5 days absent), return 0
+    return 0; 
+  }
+
+  // 2. Handle Binary (Pass/Fail)
   if (type === 'binary') {
-    // If actual is "true", "pass", "1" -> Full Weight. Else 0.
     const isPass = actual === true || actual === 'true' || actual === 'pass' || actual === 1;
     return isPass ? parseFloat(weight) : 0;
   }
 
-  // Handle Numeric KPIs
+  // 3. Handle Linear Numeric (Revenue, Quality)
   const act = parseFloat(actual);
   if (isNaN(act)) return 0;
   
@@ -304,8 +320,8 @@ const calculateScore = (actual, target, direction, weight, type = 'value') => {
   if (direction === 'higher') {
     scorePct = (act / tgt) * 100;
   } else { 
-    // Lower is better logic
-    if (act === 0) scorePct = 120; // Perfect score for 0 errors
+    // Lower is better logic (standard linear)
+    if (act === 0) scorePct = 120; 
     else scorePct = (tgt / act) * 100; 
   }
 
@@ -801,42 +817,55 @@ const MainLayout = () => {
 const DataContextWrapper = ({ children, view, setView }) => {
   const { profile } = useContext(AuthContext);
   const [activeTeamId, setActiveTeamId] = useState(null);
-  const [teams, setTeams] = useState([]);
+  const [rawTeams, setRawTeams] = useState([]);
+  const [allUsers, setAllUsers] = useState([]); // Store all users for counts
   const [members, setMembers] = useState([]);
   const [performance, setPerformance] = useState({});
   
+  // 1. Fetch Teams
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'groups'), (snap) => {
-      setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setRawTeams(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
     return () => unsub();
   }, []);
 
+  // 2. Fetch ALL Users (for Lobby Counts)
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
+      setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
+  // 3. Calculate Team Member Counts dynamically
+  const teams = useMemo(() => {
+    return rawTeams.map(team => ({
+      ...team,
+      memberCount: allUsers.filter(u => u.groupId === team.id).length
+    }));
+  }, [rawTeams, allUsers]);
+
+  // 4. Handle Active Team Logic
   useEffect(() => {
     if (profile?.groupId && view === 'team_dash') setActiveTeamId(profile.groupId);
     else if (view.startsWith('team_view_')) setActiveTeamId(view.replace('team_view_', ''));
     else setActiveTeamId(null);
   }, [profile, view]);
 
+  // 5. Filter Members for Active Team View
   useEffect(() => {
     if (!activeTeamId) { setMembers([]); setPerformance({}); return; }
+    
+    // Filter from the already loaded allUsers
+    setMembers(allUsers.filter(u => u.groupId === activeTeamId));
 
-    // OPTIMIZATION: Fetch members once (lighter load)
-    const fetchMembers = async () => {
-      try {
-        const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('groupId', '==', activeTeamId));
-        const snap = await getDocs(q);
-        setMembers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (err) { console.error("Error loading members:", err); }
-    };
-    fetchMembers();
-
-    // Keep Performance real-time (it changes often)
+    // Keep Performance real-time
     const unsubPerf = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'performance'), (snap) => {
       const p = {}; snap.docs.forEach(d => p[d.id] = d.data()); setPerformance(p);
     });
     return () => { unsubPerf(); };
-  }, [activeTeamId]);
+  }, [activeTeamId, allUsers]);
 
   return ( <DataContext.Provider value={{ teams, activeTeamId, members, performance, view, setView }}>{children}</DataContext.Provider> );
 };
@@ -1560,9 +1589,11 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 };
 
 
-// --- MAIN COMPONENT ---
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
+  
+  // NEW: State for the Recognition Modal (Fixes Z-Index Clipping)
+  const [recognitionTarget, setRecognitionTarget] = useState(null);
 
   const kpiStructure = useMemo(() => {
     const groups = {};
@@ -1581,7 +1612,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type);
+        // UPDATE: Pass 'k.steps' to enable the new Attendance logic
+        const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
         totalScore += weighted;
         return { ...k, val, weighted };
       });
@@ -1596,11 +1628,20 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }, { merge: true });
   };
 
-  const toggleAward = async (userId, award) => {
+  // UPDATE: Modified to accept currentAwards for Optimistic UI updates
+  const toggleAward = async (userId, award, currentAwards) => {
+    const has = currentAwards.includes(award);
+    const newAwards = has ? currentAwards.filter(a => a !== award) : [...currentAwards, award];
+
+    // Optimistic UI update for the modal so it feels instant
+    if(recognitionTarget && recognitionTarget.id === userId) {
+      setRecognitionTarget({ ...recognitionTarget, currentAwards: newAwards });
+    }
+
     const current = data[userId] || { actuals: {}, awards: [] };
-    const has = current.awards?.includes(award);
-    const newAwards = has ? current.awards.filter(a => a !== award) : [...(current.awards||[]), award];
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { ...current, awards: newAwards }, { merge: true });
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { 
+      ...current, awards: newAwards 
+    }, { merge: true });
   };
 
   const handleCSVExport = () => {
@@ -1652,192 +1693,232 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
   };
 
   return (
-    <Card 
-      title="Performance Matrix" 
-      icon={Activity} 
-      className="h-fit"
-      action={
-        <div className="flex items-center gap-3">
-          <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
-          {isManager && (
-            <div className="flex gap-2">
-              <button 
-                 onClick={handleCSVExport}
-                 className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all"
-                 title="Export current view to CSV"
-              >
-                <Download size={14} /> Export
-              </button>
-              <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
-                <Upload size={14} /> Import CSV
-                <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
-              </label>
-            </div>
-          )}
-        </div>
-      }
-    >
-      <div className="overflow-x-auto pb-4">
-        <table className="w-full text-left border-collapse relative">
-          <thead>
-            {/* Top Header Row (Categories) */}
-            <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
-              {/* Corner Cell: Sticky Left & Top */}
-              <th className="p-4 bg-[#0c0c0e] sticky left-0 top-0 z-50 w-56 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]"></th>
-              
-              {/* Category Cells: Sticky Top */}
-              {kpiStructure.map(([category, catKpis]) => (
-                <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518]/90 text-[#E2231A] font-black tracking-widest sticky top-0 z-40">
-                  {category}
-                </th>
-              ))}
-              
-              {/* Spacers & Actions Header: Sticky Right & Top */}
-              <th className="bg-[#0c0c0e]/95 sticky top-0 z-40"></th>
-              <th className="bg-[#0c0c0e] sticky top-0 right-0 z-50 border-l border-white/10 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]"></th>
-            </tr>
+    <>
+      <Card 
+        title="Performance Matrix" 
+        icon={Activity} 
+        className="h-fit"
+        action={
+          <div className="flex items-center gap-3">
+            <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
+            {isManager && (
+              <div className="flex gap-2">
+                <button 
+                   onClick={handleCSVExport}
+                   className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all"
+                   title="Export current view to CSV"
+                >
+                  <Download size={14} /> Export
+                </button>
+                <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
+                  <Upload size={14} /> Import CSV
+                  <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
+                </label>
+              </div>
+            )}
+          </div>
+        }
+      >
+        <div className="overflow-x-auto pb-4">
+          <table className="w-full text-left border-collapse relative">
+            <thead>
+              {/* Top Header Row (Categories) */}
+              <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
+                {/* Corner Cell: Sticky Left & Top */}
+                <th className="p-4 bg-[#0c0c0e] sticky left-0 top-0 z-30 w-56 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]"></th>
+                
+                {/* Category Cells: Sticky Top */}
+                {kpiStructure.map(([category, catKpis]) => (
+                  <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518]/90 text-[#E2231A] font-black tracking-widest sticky top-0 z-20">
+                    {category}
+                  </th>
+                ))}
+                
+                <th className="bg-[#0c0c0e]/95 sticky top-0 z-20"></th>
+                <th className="bg-[#0c0c0e] sticky top-0 right-0 z-30 border-l border-white/10 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]"></th>
+              </tr>
 
-            {/* Second Header Row (Metric Names) */}
-            <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/10">
-              {/* Agent Detail Header: Sticky Left & Top */}
-              <th className="p-4 font-bold sticky left-0 top-[33px] z-50 bg-[#0c0c0e] border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
-              
-              {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
-                <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header hover:bg-white/5 transition-colors sticky top-[33px] z-40 bg-[#0c0c0e]/95">
-                  <div className="font-bold text-zinc-200">{k.name}</div>
-                  <div className="mt-1 opacity-60 flex justify-center gap-1">
-                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
-                     <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.type === 'binary' ? 'P/F' : `T: ${k.target}`}</span>
-                  </div>
-                </th>
-              ))}
-              <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10 sticky top-[33px] z-40 bg-[#0c0c0e]/95">Total Score</th>
-              
-              {/* Actions Header: Sticky Right & Top (Always visible "over" the card) */}
-              <th className="p-3 text-center w-24 border-l border-white/10 sticky right-0 top-[33px] z-50 bg-[#0c0c0e] shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">Actions</th>            
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, idx) => (
-              <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group hover:z-10 relative">
-                {/* Agent Column: Sticky Left */}
-                <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
-                  <div className="flex items-center gap-3">
-                    
-                    {/* NEW: RANKING BADGE */}
-                    <div className="flex flex-col items-center justify-center w-6 shrink-0">
-                       <span className={cn("text-xs font-black", idx === 0 ? "text-yellow-400 text-base" : idx === 1 ? "text-zinc-300" : idx === 2 ? "text-amber-700" : "text-zinc-600")}>
-                         #{idx + 1}
-                       </span>
+              {/* Second Header Row (Metric Names) */}
+              <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/10">
+                {/* Agent Detail Header: Sticky Left & Top */}
+                <th className="p-4 font-bold sticky left-0 top-[33px] z-30 bg-[#0c0c0e] border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
+                
+                {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
+                  <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header hover:bg-white/5 transition-colors sticky top-[33px] z-20 bg-[#0c0c0e]/95">
+                    <div className="font-bold text-zinc-200">{k.name}</div>
+                    <div className="mt-1 opacity-60 flex justify-center gap-1">
+                       {/* Display STEP or Target depending on type */}
+                       {k.type === 'step' 
+                         ? <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">STEP</span>
+                         : <>
+                             <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
+                             <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.type === 'binary' ? 'P/F' : `T: ${k.target}`}</span>
+                           </>
+                       }
                     </div>
+                  </th>
+                ))}
+                <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10 sticky top-[33px] z-20 bg-[#0c0c0e]/95">Total Score</th>
+                
+                {/* Actions Header */}
+                <th className="p-3 text-center w-24 border-l border-white/10 sticky right-0 top-[33px] z-30 bg-[#0c0c0e] shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">Actions</th>            
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group hover:z-10 relative">
+                  {/* Agent Column: Sticky Left */}
+                  <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
+                    <div className="flex items-center gap-3">
+                      
+                      {/* RANKING BADGE */}
+                      <div className="flex flex-col items-center justify-center w-6 shrink-0">
+                         <span className={cn("text-xs font-black", idx === 0 ? "text-yellow-400 text-base" : idx === 1 ? "text-zinc-300" : idx === 2 ? "text-amber-700" : "text-zinc-600")}>
+                           #{idx + 1}
+                         </span>
+                      </div>
 
-                    {(() => {
-                       const lvl = getAgentLevel(row.lifetimeXP);
-                       const rank = getAgentRank(lvl);
-                       return (
-                         <div className={cn("w-10 h-10 rounded-lg flex flex-col items-center justify-center border transition-colors relative overflow-hidden shrink-0", rank.bg, rank.border)}>
-                            <span className={cn("text-[8px] uppercase font-black tracking-widest", rank.color)}>{rank.name}</span>
-                            <span className="text-sm font-bold text-white">{lvl}</span>
-                         </div>
-                       );
-                    })()}
-                    <div>
-                      <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {row.awards.map(a => <span key={a} title={a} className="text-yellow-500 animate-pulse"><Medal size={10}/></span>)}
+                      {(() => {
+                         const lvl = getAgentLevel(row.lifetimeXP);
+                         const rank = getAgentRank(lvl);
+                         return (
+                           <div className={cn("w-10 h-10 rounded-lg flex flex-col items-center justify-center border transition-colors relative overflow-hidden shrink-0", rank.bg, rank.border)}>
+                              <span className={cn("text-[8px] uppercase font-black tracking-widest", rank.color)}>{rank.name}</span>
+                              <span className="text-sm font-bold text-white">{lvl}</span>
+                           </div>
+                         );
+                      })()}
+                      <div>
+                        <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {row.awards.map(a => <span key={a} title={a} className="text-yellow-500 animate-pulse"><Medal size={10}/></span>)}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </td>
-                
-                {/* KPI Columns */}
-                {row.kpiResults.map(res => (
-                  <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
-                    {isManager ? (
-                      res.type === 'binary' ? (
-                        <select
-                          value={res.val || ''}
-                          onChange={(e) => updateScore(row.id, res.id, e.target.value)}
-                          className={cn(
-                            "bg-black/40 border text-[10px] font-bold uppercase p-2 rounded outline-none w-24 text-center cursor-pointer",
-                            res.val === 'pass' ? "border-green-500/50 text-green-500" : 
-                            res.val === 'fail' ? "border-red-500/50 text-red-500" : "border-white/10 text-zinc-500"
-                          )}
-                        >
-                          <option value="">-</option>
-                          <option value="pass">PASS</option>
-                          <option value="fail">FAIL</option>
-                        </select>
-                      ) : (
-                        <DebouncedInput 
-                          value={res.val} 
-                          onSave={(val) => updateScore(row.id, res.id, val)}
-                          placeholder="-" 
-                        />
-                      )
-                    ) : (
-                      <span className={cn("font-mono text-sm font-bold", 
-                        res.val === 'fail' ? "text-red-500" : 
-                        res.val === 'pass' ? "text-green-500" : "text-white"
-                      )}>
-                        {res.val === 'pass' ? 'PASS' : res.val === 'fail' ? 'FAIL' : (res.val || '-')}
-                      </span>
-                    )}
                   </td>
-                ))}
-
-                <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center border-l border-white/10">
-                  <span className={cn(row.totalScore >= 100 ? "text-[#E2231A] drop-shadow-[0_0_10px_rgba(226,35,26,0.5)]" : "text-white")}>
-                    {row.totalScore.toFixed(1)}%
-                  </span>
-                </td>
-                
-                {/* Actions Column: Sticky Right (The "Crown Icon" Fix) */}
-                <td className="p-3 text-center border-l border-white/10 relative sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">
-                   <div className="flex items-center justify-center gap-2">
-                      <button 
-                        onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
-                        className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
-                        title="Download PDF"
-                      >
-                        <FileSpreadsheet size={16}/>
-                      </button>
-
-                      {isManager && (
-                        <>
-                           <div className="relative group/menu inline-block">
-                              <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all relative z-10"><Crown size={16}/></button>
-                              
-                              <div className="absolute right-0 top-full h-4 w-full bg-transparent z-40"></div>
-
-                              <div className="absolute right-0 top-[calc(100%+0.5rem)] bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
-                                  <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
-                                  {awardsList.map(a => (
-                                    <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
-                                      {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
-                                    </button>
-                                  ))}
-                              </div>
-                           </div>
-                           
-                           <button 
-                             onClick={() => onRemoveMember(row.id, row.name)}
-                             className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all ml-2"
-                             title="Remove from Team"
-                           >
-                             <UserMinus size={16}/>
-                           </button>
-                        </>
+                  
+                  {/* KPI Columns */}
+                  {row.kpiResults.map(res => (
+                    <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
+                      {isManager ? (
+                        res.type === 'binary' ? (
+                          <select
+                            value={res.val || ''}
+                            onChange={(e) => updateScore(row.id, res.id, e.target.value)}
+                            className={cn(
+                              "bg-black/40 border text-[10px] font-bold uppercase p-2 rounded outline-none w-24 text-center cursor-pointer",
+                              res.val === 'pass' ? "border-green-500/50 text-green-500" : 
+                              res.val === 'fail' ? "border-red-500/50 text-red-500" : "border-white/10 text-zinc-500"
+                            )}
+                          >
+                            <option value="">-</option>
+                            <option value="pass">PASS</option>
+                            <option value="fail">FAIL</option>
+                          </select>
+                        ) : (
+                          <DebouncedInput 
+                            value={res.val} 
+                            onSave={(val) => updateScore(row.id, res.id, val)}
+                            placeholder={res.type === 'step' ? 'Days' : '-'} 
+                          />
+                        )
+                      ) : (
+                        <span className={cn("font-mono text-sm font-bold", 
+                          res.val === 'fail' ? "text-red-500" : 
+                          res.val === 'pass' ? "text-green-500" : "text-white"
+                        )}>
+                          {res.val === 'pass' ? 'PASS' : res.val === 'fail' ? 'FAIL' : (res.val || '-')}
+                        </span>
                       )}
-                   </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {rows.length === 0 && <div className="p-10 text-center text-zinc-600 text-sm italic">Initialize agent data via CSV or manual entry.</div>}
-      </div>
-    </Card>
+                    </td>
+                  ))}
+
+                  <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center border-l border-white/10">
+                    <span className={cn(row.totalScore >= 100 ? "text-[#E2231A] drop-shadow-[0_0_10px_rgba(226,35,26,0.5)]" : "text-white")}>
+                      {row.totalScore.toFixed(1)}%
+                    </span>
+                  </td>
+                  
+                  {/* Actions Column: Sticky Right */}
+                  <td className="p-3 text-center border-l border-white/10 relative sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">
+                     <div className="flex items-center justify-center gap-2">
+                        <button 
+                          onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
+                          className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
+                          title="Download PDF"
+                        >
+                          <FileSpreadsheet size={16}/>
+                        </button>
+
+                        {isManager && (
+                          <>
+                             {/* UPDATED: Open Fixed Modal instead of inline dropdown */}
+                             <button 
+                               onClick={() => setRecognitionTarget({ id: row.id, name: row.name, currentAwards: row.awards })}
+                               className="p-2 bg-white/5 hover:bg-yellow-500 hover:text-black rounded-full text-zinc-400 transition-all z-10"
+                               title="Assign Recognition"
+                             >
+                               <Crown size={16}/>
+                             </button>
+                             
+                             <button 
+                               onClick={() => onRemoveMember(row.id, row.name)}
+                               className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all ml-2"
+                               title="Remove from Team"
+                             >
+                               <UserMinus size={16}/>
+                             </button>
+                          </>
+                        )}
+                     </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && <div className="p-10 text-center text-zinc-600 text-sm italic">Initialize agent data via CSV or manual entry.</div>}
+        </div>
+      </Card>
+
+      {/* FIXED RECOGNITION MODAL OVERLAY */}
+      {recognitionTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in" onClick={() => setRecognitionTarget(null)}>
+          <div className="bg-[#09090b] border border-white/20 p-6 rounded-2xl w-full max-w-sm shadow-2xl transform scale-100" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-white">Recognize Agent</h3>
+                <p className="text-zinc-500 text-sm">Assign badges to <span className="text-[#E2231A]">{recognitionTarget.name}</span></p>
+              </div>
+              <button onClick={() => setRecognitionTarget(null)}><X size={20} className="text-zinc-500 hover:text-white"/></button>
+            </div>
+            
+            <div className="space-y-2 max-h-[300px] overflow-y-auto">
+              {awardsList.map(award => {
+                const isActive = recognitionTarget.currentAwards.includes(award);
+                return (
+                  <button 
+                    key={award}
+                    onClick={() => toggleAward(recognitionTarget.id, award, recognitionTarget.currentAwards)}
+                    className={cn(
+                      "w-full flex items-center justify-between p-4 rounded-xl border transition-all",
+                      isActive 
+                        ? "bg-[#E2231A]/10 border-[#E2231A] text-white" 
+                        : "bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10 hover:border-white/20"
+                    )}
+                  >
+                    <span className="flex items-center gap-3">
+                      <Medal size={18} className={isActive ? "text-yellow-500" : "text-zinc-600"} />
+                      <span className="font-bold text-sm">{award}</span>
+                    </span>
+                    {isActive && <CheckCircle size={16} className="text-[#E2231A]"/>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
@@ -1846,11 +1927,44 @@ const KpiConfigurator = ({ currentTeam }) => {
   const [loading, setLoading] = useState(false);
   
   const [kpis, setKpis] = useState(currentTeam?.kpis || []);
+  // Ensure gateways is initialized
   const [gateways, setGateways] = useState(currentTeam?.gateways || []);
 
-  const addKpi = () => setKpis([...kpis, { id: `kpi_${Date.now()}`, name: '', weight: 10, target: 100, direction: 'higher', type: 'value' }]);
+  const addKpi = () => setKpis([...kpis, { id: `kpi_${Date.now()}`, name: '', weight: 10, target: 100, direction: 'higher', type: 'value', steps: [] }]);
   const updateKpi = (id, field, value) => setKpis(kpis.map(k => k.id === id ? { ...k, [field]: value } : k));
   const removeKpi = (id) => setKpis(kpis.filter(k => k.id !== id));
+
+  // --- NEW: STEP MANAGEMENT FUNCTIONS ---
+  const addStep = (kpiId) => {
+    setKpis(kpis.map(k => {
+      if (k.id === kpiId) {
+        const newSteps = [...(k.steps || []), { limit: 0, score: 0 }];
+        return { ...k, steps: newSteps };
+      }
+      return k;
+    }));
+  };
+
+  const updateStep = (kpiId, stepIdx, field, value) => {
+    setKpis(kpis.map(k => {
+      if (k.id === kpiId) {
+        const newSteps = [...(k.steps || [])];
+        newSteps[stepIdx] = { ...newSteps[stepIdx], [field]: value };
+        return { ...k, steps: newSteps };
+      }
+      return k;
+    }));
+  };
+
+  const removeStep = (kpiId, stepIdx) => {
+    setKpis(kpis.map(k => {
+      if (k.id === kpiId) {
+        return { ...k, steps: k.steps.filter((_, idx) => idx !== stepIdx) };
+      }
+      return k;
+    }));
+  };
+  // --------------------------------------
 
   const addGateway = () => setGateways([...gateways, { id: `gate_${Date.now()}`, name: '', penalty: 'zero', weight: 0 }]);
   const updateGateway = (id, field, value) => setGateways(gateways.map(g => g.id === id ? { ...g, [field]: value } : g));
@@ -1886,7 +2000,7 @@ const KpiConfigurator = ({ currentTeam }) => {
         </Button>
       </div>
 
-      {/* GATEWAYS */}
+      {/* GATEWAYS SECTION */}
       <div className="space-y-4">
         <div className="flex justify-between items-center">
           <div className="text-xs font-bold text-[#E2231A] uppercase tracking-widest flex items-center gap-2"><Shield size={14}/> Global Gateways</div>
@@ -1909,7 +2023,7 @@ const KpiConfigurator = ({ currentTeam }) => {
         ))}
       </div>
 
-      {/* KPIS - FIXED LAYOUT */}
+      {/* KPIS SECTION */}
       <div className="space-y-4">
         <div className="flex justify-between items-center">
            <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2"><Target size={14}/> Performance Metrics</div>
@@ -1918,7 +2032,7 @@ const KpiConfigurator = ({ currentTeam }) => {
 
         {kpis.map((k) => (
           <div key={k.id} className="kpi-card-styled">
-            {/* Header Row: Name and Delete Button - Prevents Overlap */}
+            {/* Header Row */}
             <div className="flex gap-4 items-start mb-4 border-b border-white/5 pb-4">
                <div className="flex-1 kpi-input-group">
                   <label>Metric Name</label>
@@ -1927,11 +2041,12 @@ const KpiConfigurator = ({ currentTeam }) => {
                <button onClick={() => removeKpi(k.id)} className="btn-icon-danger mt-1"><Trash2 size={16}/></button>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <div className="kpi-input-group">
                 <label>Type</label>
                 <select className="kpi-select-styled" value={k.type || 'value'} onChange={e => updateKpi(k.id, 'type', e.target.value)}>
                   <option value="value">Numeric Target</option>
+                  <option value="step">Step Logic</option> {/* Added Step Option */}
                   <option value="binary">Pass / Fail</option>
                 </select>
               </div>
@@ -1940,17 +2055,54 @@ const KpiConfigurator = ({ currentTeam }) => {
                 <input type="number" className="kpi-input-styled text-[#E2231A] font-bold" value={k.weight} onChange={e => updateKpi(k.id, 'weight', e.target.value)} />
               </div>
 
-              {k.type !== 'binary' ? (
+              {k.type === 'value' && (
                 <>
                   <div className="kpi-input-group"><label>Target</label><input type="number" className="kpi-input-styled" value={k.target} onChange={e => updateKpi(k.id, 'target', e.target.value)} /></div>
                   <div className="kpi-input-group"><label>Direction</label><select className="kpi-select-styled" value={k.direction} onChange={e => updateKpi(k.id, 'direction', e.target.value)}><option value="higher">Higher is Better</option><option value="lower">Lower is Better</option></select></div>
                 </>
-              ) : (
-                 <div className="col-span-2 flex items-center justify-center bg-white/5 rounded border border-dashed border-white/10 text-[10px] text-zinc-500">
-                    Binary Logic Active
-                 </div>
               )}
             </div>
+
+            {/* --- NEW: RENDER STEP DEFINITION UI --- */}
+            {k.type === 'step' && (
+              <div className="bg-black/30 border border-white/5 rounded-lg p-4 mt-2">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase">Step Definition (If Actual ≤ X, then Y%)</span>
+                  <button onClick={() => addStep(k.id)} className="text-[10px] bg-white/5 hover:bg-white/10 text-white px-2 py-1 rounded border border-white/10 flex items-center gap-1">
+                    <Plus size={10}/> Add Step
+                  </button>
+                </div>
+                
+                <div className="space-y-2">
+                  {(k.steps || []).map((step, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                       <div className="flex-1">
+                         <div className="text-[9px] text-zinc-600 font-bold mb-1">THRESHOLD (≤)</div>
+                         <input 
+                           type="number" 
+                           className="kpi-input-styled" 
+                           value={step.limit} 
+                           onChange={(e) => updateStep(k.id, idx, 'limit', e.target.value)} 
+                         />
+                       </div>
+                       <div className="flex-1">
+                         <div className="text-[9px] text-zinc-600 font-bold mb-1">SCORE %</div>
+                         <input 
+                           type="number" 
+                           className="kpi-input-styled text-[#E2231A]" 
+                           value={step.score} 
+                           onChange={(e) => updateStep(k.id, idx, 'score', e.target.value)} 
+                         />
+                       </div>
+                       <button onClick={() => removeStep(k.id, idx)} className="btn-icon-danger mt-4"><X size={14}/></button>
+                    </div>
+                  ))}
+                  {(k.steps || []).length === 0 && <div className="text-center text-zinc-700 text-xs py-2 italic">No steps defined.</div>}
+                </div>
+              </div>
+            )}
+            {/* -------------------------------------- */}
+
           </div>
         ))}
       </div>
