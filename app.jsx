@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, createContext, useContext, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, createContext, useContext, useCallback, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -1265,9 +1265,9 @@ const TeamDashboard = () => {
     members.forEach(m => {
       const p = performance[m.id] || { actuals: {} };
       let total = 0;
-      activeTeam.kpis.forEach(k => {
-        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.gates);
-      });
+     activeTeam.kpis.forEach(k => {
+  total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type);
+});
       
       // Save for history
       statsSnapshot[m.id] = { 
@@ -1960,7 +1960,7 @@ const Leaderboard = ({ members, kpis, data }) => {
     return members.map(m => {
       const p = data[m.id] || { actuals: {} };
       let total = 0;
-      kpis.forEach(k => { total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.gates); });      return { ...m, total };
+      kpis.forEach(k => { total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type); });
     }).sort((a,b) => b.total - a.total).slice(0, 5);
   }, [members, kpis, data]);
 
