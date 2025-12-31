@@ -22,14 +22,18 @@ import {
   deleteDoc,
   serverTimestamp,
   getDocs,
-  writeBatch
+  writeBatch,
+  limit,       // NEW: For chat limits
+  orderBy      // NEW: For chat sorting
 } from 'firebase/firestore';
+
 import { 
   Trophy, Users, Settings, UserPlus, LogOut, CheckCircle, XCircle, Plus, 
   Save, Medal, Activity, Search, Crown, AlertTriangle, Loader, 
   ArrowUpRight, Eye, Edit3, Shield, LayoutGrid, Mail, Upload, FileSpreadsheet, 
   TrendingUp, TrendingDown, Target, Lock, ChevronRight, BarChart3, Calculator,
-  Info, Zap, Sparkles, Download, Trash2,UserMinus, Trash, Edit2, BookOpen, Heart, MessageSquare, Send, X
+  Info, Zap, Sparkles, Download, Trash2, UserMinus, Trash, Edit2, BookOpen, 
+  Heart, MessageSquare, Send, X // NEW: Added icons for Chat
 } from 'lucide-react';
 
 // --- STYLES & ANIMATIONS ---
@@ -351,6 +355,110 @@ const getAgentRank = (level) => {
 const AuthContext = createContext(null);
 const DataContext = createContext(null);
 const ToastContext = createContext(null);
+// --- CHAT CONTEXT ---
+const ChatContext = createContext(null);
+
+const ChatProvider = ({ children }) => {
+  const { user, profile } = useContext(AuthContext);
+  const { activeTeamId, members } = useContext(DataContext);
+  const [messages, setMessages] = useState([]);
+  const [activeChannel, setActiveChannel] = useState(null); // { type: 'team', id: 'teamId', name: '...' }
+  const [isOpen, setIsOpen] = useState(false);
+
+  // Sound Effect
+  const playNotification = () => {
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    audio.volume = 0.5;
+    audio.play().catch(e => console.log("Audio play failed interaction required"));
+  };
+
+  // 1. Auto-Join Team Channel
+  useEffect(() => {
+    if (activeTeamId && !activeChannel) {
+      setActiveChannel({ type: 'team', id: activeTeamId, name: 'Team Comms' });
+    }
+  }, [activeTeamId]);
+
+  // 2. Real-Time Listener
+  useEffect(() => {
+    if (!user || !activeChannel) return;
+
+    setMessages([]); 
+    
+    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+    let q;
+
+    if (activeChannel.type === 'team') {
+      q = query(
+        collectionRef, 
+        where('type', '==', 'team'),
+        where('teamId', '==', activeChannel.id),
+        orderBy('createdAt', 'asc'),
+        limit(100)
+      );
+    } else {
+      // Phase 1 Simple DM Query
+      q = query(
+        collectionRef,
+        where('type', '==', 'dm'),
+        orderBy('createdAt', 'asc'),
+        limit(200) 
+      );
+    }
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const allMsgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      
+      // Filter Logic
+      const filtered = activeChannel.type === 'team' ? allMsgs : allMsgs.filter(m => 
+        (m.senderId === user.uid && m.receiverId === activeChannel.id) || 
+        (m.senderId === activeChannel.id && m.receiverId === user.uid)
+      );
+
+      // Sound Logic
+      const lastMsg = filtered[filtered.length - 1];
+      if (lastMsg && lastMsg.senderId !== user.uid) {
+         const isNew = Date.now() - (lastMsg.createdAt?.toMillis() || 0) < 5000;
+         if (isNew) playNotification();
+      }
+
+      setMessages(filtered);
+    });
+
+    return () => unsubscribe();
+  }, [activeChannel, user]);
+
+  const sendMessage = async (text) => {
+    if (!text.trim() || !activeChannel) return;
+    
+    const payload = {
+      type: activeChannel.type,
+      senderId: user.uid,
+      senderName: profile.name,
+      senderRole: profile.role,
+      content: text,
+      createdAt: serverTimestamp(),
+      readBy: [user.uid]
+    };
+
+    if (activeChannel.type === 'team') {
+      payload.teamId = activeChannel.id;
+      payload.receiverId = null;
+    } else {
+      payload.teamId = null;
+      payload.receiverId = activeChannel.id;
+    }
+
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), payload);
+  };
+
+  return (
+    <ChatContext.Provider value={{ messages, activeChannel, setActiveChannel, isOpen, setIsOpen, sendMessage }}>
+      {children}
+    </ChatContext.Provider>
+  );
+};
+
 
 const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
@@ -529,11 +637,114 @@ export default function App() {
   );
 }
 
+const ChatInterface = () => {
+  const { messages, activeChannel, sendMessage, isOpen, setIsOpen, setActiveChannel } = useContext(ChatContext);
+  const { members, activeTeamId } = useContext(DataContext);
+  const { user } = useContext(AuthContext);
+  const [input, setInput] = useState('');
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  if (!isOpen) {
+    return (
+      <button 
+        onClick={() => setIsOpen(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-[#E2231A] rounded-full flex items-center justify-center text-white shadow-[0_0_30px_rgba(226,35,26,0.6)] z-[100] hover:scale-110 transition-transform animate-slide-up"
+      >
+        <MessageSquare size={24} />
+      </button>
+    );
+  }
+
+  return (
+    <div className="fixed bottom-6 right-6 w-[350px] h-[500px] glass-card rounded-2xl flex flex-col shadow-2xl z-[100] overflow-hidden border border-white/10 animate-slide-up bg-[#09090b]">
+      {/* Header */}
+      <div className="p-4 bg-[#E2231A] flex justify-between items-center shrink-0">
+        <div className="flex items-center gap-2 overflow-hidden">
+          {activeChannel?.type === 'team' ? <Users size={16} className="shrink-0"/> : <UserPlus size={16} className="shrink-0"/>}
+          <span className="font-bold text-white uppercase text-xs tracking-wider truncate">
+            {activeChannel?.name || 'Comms'}
+          </span>
+        </div>
+        <div className="flex gap-2 shrink-0">
+           {/* Dropdown for Switching */}
+           <div className="relative group">
+              <button className="p-1 hover:bg-white/20 rounded"><Users size={14} className="text-white"/></button>
+              <div className="absolute right-0 top-full mt-2 w-48 bg-black border border-white/20 rounded-lg p-2 hidden group-hover:block max-h-40 overflow-y-auto shadow-xl z-50">
+                <div 
+                   className="p-2 hover:bg-white/10 text-xs text-white cursor-pointer font-bold border-b border-white/10 mb-1"
+                   onClick={() => setActiveChannel({ type: 'team', id: activeTeamId, name: 'Team General' })}
+                >
+                  Team Channel
+                </div>
+                {members.filter(m => m.id !== user.uid).map(m => (
+                  <div 
+                    key={m.id} 
+                    className="p-2 hover:bg-white/10 text-xs text-zinc-400 hover:text-white cursor-pointer truncate"
+                    onClick={() => setActiveChannel({ type: 'dm', id: m.id, name: m.name })}
+                  >
+                    {m.name}
+                  </div>
+                ))}
+              </div>
+           </div>
+           <button onClick={() => setIsOpen(false)}><X size={16} className="text-white/80 hover:text-white"/></button>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-black/40 backdrop-blur-md scrollbar-thin scrollbar-thumb-zinc-700">
+        {messages.map((msg) => {
+          const isMe = msg.senderId === user.uid;
+          return (
+            <div key={msg.id} className={cn("flex flex-col max-w-[85%]", isMe ? "ml-auto items-end" : "items-start")}>
+              <div className="flex items-center gap-2 mb-1">
+                 {!isMe && <span className="text-[9px] text-zinc-500 font-bold uppercase">{msg.senderName}</span>}
+                 {!isMe && msg.senderRole === 'manager' && <span className="bg-purple-900/80 text-purple-200 text-[8px] px-1 rounded border border-purple-500/30">MGR</span>}
+              </div>
+              <div className={cn(
+                "px-3 py-2 rounded-xl text-xs leading-relaxed break-words",
+                isMe ? "bg-[#E2231A] text-white rounded-tr-none" : "bg-zinc-800 text-zinc-200 rounded-tl-none border border-white/5"
+              )}>
+                {msg.content}
+              </div>
+              <span className="text-[8px] text-zinc-600 mt-1">
+                {msg.createdAt?.seconds ? new Date(msg.createdAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '...'}
+              </span>
+            </div>
+          );
+        })}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="p-3 bg-zinc-900 border-t border-white/10 flex gap-2 shrink-0">
+        <input 
+          className="flex-1 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:border-[#E2231A] outline-none"
+          placeholder="Transmit message..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && (sendMessage(input), setInput(''))}
+        />
+        <button 
+          onClick={() => { sendMessage(input); setInput(''); }}
+          className="bg-[#E2231A] hover:bg-red-600 text-white p-2 rounded-lg transition-colors"
+        >
+          <Send size={14} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const MainLayout = () => {
   const { profile, loading } = useContext(AuthContext);
   const [view, setView] = useState('lobby');
 
-  // --- NEW: MOUSE TRACKING LOGIC ---
+  // Mouse Tracking Logic
   useEffect(() => {
     const handleMouseMove = (e) => {
       const x = e.clientX;
@@ -558,28 +769,31 @@ const MainLayout = () => {
 
   return (
     <DataContextWrapper view={view} setView={setView}>
-      <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-[#E2231A] selection:text-white w-full h-full relative">
-        
-        {/* --- NEW: SPOTLIGHT ELEMENT --- */}
-        <div className="mouse-spotlight"></div>
+      <ChatProvider>
+        <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-[#E2231A] selection:text-white w-full h-full relative">
+          
+          <div className="mouse-spotlight"></div>
 
-        {/* Ambient Background */}
-        <div className="fixed inset-0 pointer-events-none z-0">
-           <div className="absolute top-[-20%] right-[-10%] w-[800px] h-[800px] bg-[#E2231A] rounded-full blur-[180px] opacity-[0.06] animate-pulse"></div>
-           <div className="absolute bottom-[-20%] left-[-10%] w-[900px] h-[900px] bg-blue-900 rounded-full blur-[200px] opacity-[0.04]"></div>
-           <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-overlay"></div>
+          <div className="fixed inset-0 pointer-events-none z-0">
+             <div className="absolute top-[-20%] right-[-10%] w-[800px] h-[800px] bg-[#E2231A] rounded-full blur-[180px] opacity-[0.06] animate-pulse"></div>
+             <div className="absolute bottom-[-20%] left-[-10%] w-[900px] h-[900px] bg-blue-900 rounded-full blur-[200px] opacity-[0.04]"></div>
+             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-overlay"></div>
+          </div>
+
+          <Navbar view={view} setView={setView} />
+          <main className="w-full max-w-[1600px] mx-auto px-4 md:px-12 py-8 relative z-10 animate-fade-in flex flex-col gap-6 flex-1">
+            {view === 'admin_dash' && <AdminDashboard />}
+            {view === 'lobby' && <LobbyView setView={setView} />}
+            {view === 'create_team' && <CreateTeamView setView={setView} />}
+            {view === 'team_dash' && <TeamDashboard />}
+            {view === 'learning_hub' && <LearningHub />}
+            {view === 'user_mgmt' && <UserManagement />}
+          </main>
+
+          <ChatInterface />
+          
         </div>
-
-        <Navbar view={view} setView={setView} />
-        <main className="w-full max-w-[1600px] mx-auto px-4 md:px-12 py-8 relative z-10 animate-fade-in flex flex-col gap-6 flex-1">
-          {view === 'admin_dash' && <AdminDashboard />}
-          {view === 'lobby' && <LobbyView setView={setView} />}
-          {view === 'create_team' && <CreateTeamView setView={setView} />}
-          {view === 'team_dash' && <TeamDashboard />}
-          {view === 'learning_hub' && <LearningHub />}
-          {view === 'user_mgmt' && <UserManagement />}
-        </main>
-      </div>
+      </ChatProvider>
     </DataContextWrapper>
   );
 };
