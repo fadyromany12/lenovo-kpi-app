@@ -142,6 +142,22 @@ const GlobalStyles = () => (
 }
 .btn-icon-danger:hover { background: #ef4444; color: white; }
 
+/* MOUSE SPOTLIGHT EFFECT */
+    .mouse-spotlight {
+      pointer-events: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1; /* Behind content but above background */
+      background: radial-gradient(600px circle at var(--x) var(--y), rgba(226, 35, 26, 0.15), transparent 40%);
+      transition: opacity 0.3s;
+    }
+
+    @media (hover: none) {
+      .mouse-spotlight { display: none; }
+    }
   `}</style>
 );
 
@@ -402,7 +418,10 @@ const AuthProvider = ({ children }) => {
     if (!user) return;
     const storedEmail = localStorage.getItem('lenovo_user_email');
     if (!storedEmail && !profile) { setLoading(false); return; }
-    const emailToQuery = storedEmail || profile?.email;
+    
+    // FIX: Force lowercase here to prevent mismatch
+    const emailToQuery = (storedEmail || profile?.email || '').toLowerCase(); 
+    
     if (!emailToQuery) { setLoading(false); return; }
 
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('email', '==', emailToQuery));
@@ -427,8 +446,12 @@ const AuthProvider = ({ children }) => {
     return () => unsubscribe();
   }, [user]);
 
-  const login = async (email, role, secret) => {
+  const login = async (inputEmail, role, secret) => {
     setLoading(true);
+    
+    // FIX: Force lowercase and trim spaces immediately upon input
+    const email = inputEmail.toLowerCase().trim();
+
     if (role === 'super_user' && secret !== ADMIN_SECRET) {
       showToast("Access Denied: Invalid Secret", "error");
       setLoading(false); return;
@@ -454,17 +477,16 @@ const AuthProvider = ({ children }) => {
         // --- NEW USER REGISTRATION ---
         const name = parseNameFromEmail(email);
         
-        // FIX: If requesting Manager, create as Agent first and send request
+        // Ensure new users requesting Manager start as Agents until approved
         let initialRole = role;
         if (role === 'manager') {
-           initialRole = 'agent'; // Downgrade until approved
+           initialRole = 'agent'; 
         }
 
         const newRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'users'));
         const newData = { name, email, role: initialRole, joinedAt: serverTimestamp(), groupId: null };
         await setDoc(newRef, newData);
         
-        // If they wanted to be a manager, create a request
         if (role === 'manager') {
            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'manager_requests'), {
              userId: newRef.id, name, email, status: 'pending', requestedAt: serverTimestamp()
@@ -492,7 +514,7 @@ const AuthProvider = ({ children }) => {
   return ( <AuthContext.Provider value={{ user, profile, loading, login, logout }}>{children}</AuthContext.Provider> );
 };
 
-// --- APP ---
+// --- APP ---//
 
 export default function App() {
   if (configError) return <ErrorScreen error={configError} />;
@@ -511,6 +533,18 @@ const MainLayout = () => {
   const { profile, loading } = useContext(AuthContext);
   const [view, setView] = useState('lobby');
 
+  // --- NEW: MOUSE TRACKING LOGIC ---
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      const x = e.clientX;
+      const y = e.clientY;
+      document.documentElement.style.setProperty('--x', `${x}px`);
+      document.documentElement.style.setProperty('--y', `${y}px`);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
   useEffect(() => {
     if (profile) {
       if (profile.role === 'super_user') setView('admin_dash');
@@ -524,13 +558,15 @@ const MainLayout = () => {
 
   return (
     <DataContextWrapper view={view} setView={setView}>
-      <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-[#E2231A] selection:text-white w-full h-full">
+      <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-[#E2231A] selection:text-white w-full h-full relative">
+        
+        {/* --- NEW: SPOTLIGHT ELEMENT --- */}
+        <div className="mouse-spotlight"></div>
+
         {/* Ambient Background */}
         <div className="fixed inset-0 pointer-events-none z-0">
            <div className="absolute top-[-20%] right-[-10%] w-[800px] h-[800px] bg-[#E2231A] rounded-full blur-[180px] opacity-[0.06] animate-pulse"></div>
            <div className="absolute bottom-[-20%] left-[-10%] w-[900px] h-[900px] bg-blue-900 rounded-full blur-[200px] opacity-[0.04]"></div>
-           {/* Added extra depth layer */}
-           <div className="absolute top-[40%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-purple-900/10 rounded-full blur-[150px] mix-blend-screen"></div>
            <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-overlay"></div>
         </div>
 
@@ -1534,29 +1570,37 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                       </button>
 
                       {isManager && (
-                        <>
-                           {/* EXISTING AWARD MENU */}
-                           <div className="relative group/menu">
-                              <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all"><Crown size={16}/></button>
-                              <div className="absolute right-0 top-full mt-2 bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
-                                  {/* ... awards list code ... */}
-                                  {awardsList.map(a => (
-                                    <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
-                                      {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
-                                    </button>
-                                  ))}
-                              </div>
-                           </div>
-                           
-                           {/* NEW: REMOVE AGENT BUTTON */}
-                           <button 
-                             onClick={() => onRemoveMember(row.id, row.name)}
-                             className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all"
-                             title="Remove from Team"
-                           >
-                             <UserMinus size={16}/>
+                        <div className="relative group/menu inline-block">
+                           {/* Crown Button - Added relative & z-10 to stay above bridge */}
+                           <button className="p-2 bg-white/5 hover:bg-yellow-500/20 hover:text-yellow-500 rounded-full text-zinc-400 transition-all relative z-10">
+                             <Crown size={16}/>
                            </button>
-                        </>
+                           
+                           {/* --- THE FIX: Invisible Bridge --- */}
+                           {/* This transparent box fills the gap between button and menu */}
+                           <div className="absolute right-0 top-full h-4 w-full bg-transparent z-40"></div>
+
+                           {/* Dropdown Menu - Adjusted top position */}
+                           <div className="absolute right-0 top-[calc(100%+0.5rem)] bg-[#0c0c0e] border border-white/10 rounded-xl p-2 shadow-2xl z-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all min-w-[200px] text-left">
+                              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1 mb-1">Assign Recognition</div>
+                              {awardsList.map(a => (
+                                <button key={a} onClick={() => toggleAward(row.id, a)} className={cn("flex items-center justify-between w-full text-left text-xs p-2 rounded hover:bg-white/5 transition-colors", row.awards.includes(a) ? "text-yellow-500 font-bold" : "text-zinc-400")}>
+                                  {a} {row.awards.includes(a) && <CheckCircle size={12}/>}
+                                </button>
+                              ))}
+                           </div>
+                        </div>
+                      )}
+
+                      {isManager && (
+                        /* NEW: REMOVE AGENT BUTTON (Kept separate from group/menu) */
+                        <button 
+                          onClick={() => onRemoveMember(row.id, row.name)}
+                          className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all ml-2"
+                          title="Remove from Team"
+                        >
+                          <UserMinus size={16}/>
+                        </button>
                       )}
                    </div>
                 </td>
