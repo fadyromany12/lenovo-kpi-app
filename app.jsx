@@ -24,7 +24,9 @@ import {
   getDocs,
   writeBatch,
   limit,       // NEW: For chat limits
-  orderBy      // NEW: For chat sorting
+  orderBy,
+  arrayUnion,
+  arrayRemove      // NEW: For chat sorting
 } from 'firebase/firestore';
 
 import { 
@@ -283,50 +285,65 @@ const parseNameFromEmail = (email) => {
   return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 };
 
-// --- UPDATED CALCULATION ENGINE (With Auto-Sorting) ---
+// --- UPDATED CALCULATION ENGINE ---
 const calculateScore = (actual, target, direction, weight, type = 'value', steps = []) => {
-  // 1. Handle Step/Gate Logic (Attendance)
+  // 0. Handle Empty/Null inputs safely
+  if (actual === undefined || actual === null || actual === '') return 0;
+
+  const w = parseFloat(weight) || 0;
+
+  // 1. Handle Step Logic
   if (type === 'step' && Array.isArray(steps) && steps.length > 0) {
     const act = parseFloat(actual);
     if (isNaN(act)) return 0;
     
-    // CRITICAL FIX: Sort steps by limit (ascending) so we check <= 1 before <= 2
-    // We use [...steps] to create a copy and not mutate the original array
+    // Sort steps by limit (Ascending: 0, 1, 2...)
     const sortedSteps = [...steps].sort((a, b) => parseFloat(a.limit) - parseFloat(b.limit));
 
-    // Iterate through sorted steps
     for (const step of sortedSteps) {
       if (act <= parseFloat(step.limit)) {
-        return (parseFloat(step.score) / 100) * weight;
+        return (parseFloat(step.score) / 100) * w;
       }
     }
-    // If actual value is higher than all steps (e.g., 5 days absent), return 0
-    return 0; 
+    return 0; // Exceeded all limits
   }
 
   // 2. Handle Binary (Pass/Fail)
   if (type === 'binary') {
-    const isPass = actual === true || actual === 'true' || actual === 'pass' || actual === 1;
-    return isPass ? parseFloat(weight) : 0;
+    const cleanVal = String(actual).toLowerCase();
+    const isPass = cleanVal === 'true' || cleanVal === 'pass' || cleanVal === '1';
+    return isPass ? w : 0;
   }
 
-  // 3. Handle Linear Numeric (Revenue, Quality)
+  // 3. Handle Linear Numeric
   const act = parseFloat(actual);
-  if (isNaN(act)) return 0;
-  
   const tgt = parseFloat(target) || 1;
-  let scorePct = 0;
+  if (isNaN(act)) return 0;
 
+  let scorePct = 0;
   if (direction === 'higher') {
     scorePct = (act / tgt) * 100;
-  } else { 
-    // Lower is better logic (standard linear)
-    if (act === 0) scorePct = 120; 
-    else scorePct = (tgt / act) * 100; 
+  } else {
+    // Lower is better (e.g., AHT)
+    if (act === 0) scorePct = 150; // Perfect score for 0 errors/time
+    else scorePct = (tgt / act) * 100;
   }
 
-  // Cap at 150% performance per KPI
-  return (Math.min(scorePct, 150) / 100) * weight;
+  // Cap Performance at 150%
+  return (Math.min(scorePct, 150) / 100) * w;
+};
+
+// NEW: Single Source of Truth for Total Score
+const calculateTotalScore = (memberData, kpis) => {
+  let total = 0;
+  if (!kpis) return 0;
+  
+  kpis.forEach(k => {
+    const val = memberData?.actuals?.[k.id];
+    total += calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
+  });
+  
+  return total;
 };
 
 // 2. New Helper: Calculate Total with Global Gateways
@@ -658,6 +675,7 @@ const ChatInterface = () => {
   const { members, activeTeamId } = useContext(DataContext);
   const { user } = useContext(AuthContext);
   const [input, setInput] = useState('');
+  const [showTeamMenu, setShowTeamMenu] = useState(false); // NEW: Toggle State
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -686,26 +704,40 @@ const ChatInterface = () => {
           </span>
         </div>
         <div className="flex gap-2 shrink-0">
-           {/* Dropdown for Switching */}
-           <div className="relative group">
-              <button className="p-1 hover:bg-white/20 rounded"><Users size={14} className="text-white"/></button>
-              <div className="absolute right-0 top-full mt-2 w-48 bg-black border border-white/20 rounded-lg p-2 hidden group-hover:block max-h-40 overflow-y-auto shadow-xl z-50">
-                <div 
-                   className="p-2 hover:bg-white/10 text-xs text-white cursor-pointer font-bold border-b border-white/10 mb-1"
-                   onClick={() => setActiveChannel({ type: 'team', id: activeTeamId, name: 'Team General' })}
-                >
-                  Team Channel
-                </div>
-                {members.filter(m => m.id !== user.uid).map(m => (
+           {/* FIXED: Dropdown using Click State instead of Hover */}
+           <div className="relative">
+              <button 
+                className={cn("p-1 rounded transition-colors", showTeamMenu ? "bg-white/20" : "hover:bg-white/20")}
+                onClick={() => setShowTeamMenu(!showTeamMenu)}
+              >
+                <Users size={14} className="text-white"/>
+              </button>
+              
+              {showTeamMenu && (
+                <div className="absolute right-0 top-full mt-2 w-48 bg-black border border-white/20 rounded-lg p-2 max-h-40 overflow-y-auto shadow-xl z-50">
                   <div 
-                    key={m.id} 
-                    className="p-2 hover:bg-white/10 text-xs text-zinc-400 hover:text-white cursor-pointer truncate"
-                    onClick={() => setActiveChannel({ type: 'dm', id: m.id, name: m.name })}
+                     className="p-2 hover:bg-white/10 text-xs text-white cursor-pointer font-bold border-b border-white/10 mb-1"
+                     onClick={() => {
+                       setActiveChannel({ type: 'team', id: activeTeamId, name: 'Team General' });
+                       setShowTeamMenu(false);
+                     }}
                   >
-                    {m.name}
+                    Team Channel
                   </div>
-                ))}
-              </div>
+                  {members.filter(m => m.id !== user.uid).map(m => (
+                    <div 
+                      key={m.id} 
+                      className="p-2 hover:bg-white/10 text-xs text-zinc-400 hover:text-white cursor-pointer truncate"
+                      onClick={() => {
+                        setActiveChannel({ type: 'dm', id: m.id, name: m.name });
+                        setShowTeamMenu(false);
+                      }}
+                    >
+                      {m.name}
+                    </div>
+                  ))}
+                </div>
+              )}
            </div>
            <button onClick={() => setIsOpen(false)}><X size={16} className="text-white/80 hover:text-white"/></button>
         </div>
@@ -1214,7 +1246,6 @@ const InfoTooltip = ({ text }) => (
 );
 
 const TeamDashboard = () => {
-  // FIX: Added 'setView' to context so we can redirect after deleting a team
   const { activeTeamId, members, performance, teams, setView } = useContext(DataContext);
   const { profile } = useContext(AuthContext);
   const { showToast } = useContext(ToastContext);
@@ -1222,11 +1253,17 @@ const TeamDashboard = () => {
   const [history, setHistory] = useState([]); 
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
+
+  // LOGIC FIX: Ensure Super User is ALWAYS a manager, regardless of team assignment
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
+  
+  // Observer: Someone who isn't a manager of this team, and isn't a member of this team
   const isObserver = !isManager && profile.groupId !== activeTeamId;
   
-  // --- NEW: Filter Agents (Exclude Manager from Stats) ---
-  const agents = useMemo(() => members.filter(m => m.role !== 'manager'), [members]);
+  // Filter Agents: Hide Manager & Self
+  const agents = useMemo(() => {
+    return members.filter(m => m.role === 'agent' && m.id !== profile.id);
+  }, [members, profile.id]);
 
   // --- TEAM MANAGEMENT LOGIC ---
   const [isEditing, setIsEditing] = useState(false);
@@ -1295,22 +1332,15 @@ const TeamDashboard = () => {
 
     // 1. Calculate final scores and prepare XP updates (Using 'agents' only)
     agents.forEach(m => {
-      const p = performance[m.id] || { actuals: {} };
-      let total = 0;
-      
-      // FIX: Ensure kpis exist before iterating
-      if (activeTeam.kpis) {
-        activeTeam.kpis.forEach(k => {
-          total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type, k.steps);
-        });
-      }
+      // Use shared calculation logic
+      const total = calculateTotalScore(performance[m.id], activeTeam.kpis);
       
       // Save for history
       statsSnapshot[m.id] = { 
         name: m.name, 
         totalScore: total, 
-        actuals: p.actuals || {},
-        awards: p.awards || []
+        actuals: performance[m.id]?.actuals || {},
+        awards: performance[m.id]?.awards || []
       };
 
       // Add XP (Score = XP)
@@ -1406,7 +1436,7 @@ const TeamDashboard = () => {
                  <div className="bg-white/5 p-4 rounded-lg">
                     <div className="text-zinc-500 text-xs uppercase font-bold">Best Performer</div>
                     <div className="text-2xl font-black text-[#E2231A]">
-                       {/* UPDATED: Use agents instead of members */}
+                       {/* UPDATED: Use filtered agents list */}
                        {agents.reduce((max, m) => Math.max(max, getAgentLevel(m.lifetimeXP)), 0)} <span className="text-sm font-normal text-zinc-500">Lvl</span>
                     </div>
                  </div>
@@ -1598,8 +1628,13 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
   
-  // UPDATED: State includes coordinates for the popover (x, y)
+  // UPDATED: State for centered modal (only holds target data, no coordinates needed)
   const [recognitionTarget, setRecognitionTarget] = useState(null);
+  
+  // NEW: State for Custom Badge Creator
+  const [newBadgeName, setNewBadgeName] = useState('');
+  const [newBadgeColor, setNewBadgeColor] = useState('text-yellow-400');
+  const COLORS = ['text-yellow-400', 'text-blue-400', 'text-green-400', 'text-purple-400', 'text-red-400', 'text-pink-400'];
 
   const kpiStructure = useMemo(() => {
     const groups = {};
@@ -1618,7 +1653,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        // Pass 'k.steps' to enable the new Attendance logic
+        // Uses the updated global calculateScore function
         const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
         totalScore += weighted;
         return { ...k, val, weighted };
@@ -1627,20 +1662,15 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }).sort((a,b) => b.totalScore - a.totalScore);
   }, [members, data, kpis]);
 
-  // NEW: Calculate Team Averages for the Footer
   const teamStats = useMemo(() => {
     if (rows.length === 0) return null;
     const stats = { totalScore: 0, kpis: {} };
-    
-    // Initialize kpi accumulators
     kpis.forEach(k => stats.kpis[k.id] = { sum: 0, count: 0 });
 
     rows.forEach(r => {
         stats.totalScore += r.totalScore;
         r.kpiResults.forEach(res => {
-            const val = parseFloat(res.weighted); // We average the weighted scores
-            // Alternatively, average the raw values (res.val) if preferred, 
-            // but weighted score average is usually more consistent for the final total.
+            const val = parseFloat(res.weighted); 
             if (!isNaN(val)) {
                 stats.kpis[res.id].sum += val;
                 stats.kpis[res.id].count++;
@@ -1671,6 +1701,25 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { 
       ...current, awards: newAwards 
     }, { merge: true });
+  };
+
+  const handleAddCustomBadge = async () => {
+    if (!newBadgeName.trim()) return;
+    const badgeId = `${newBadgeName.trim()}#${newBadgeColor}`; // Encode color in ID
+    
+    // Save to Team Settings so it persists
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId), {
+        awards: arrayUnion(badgeId)
+    });
+    
+    showToast("New Badge Created!");
+    setNewBadgeName('');
+  };
+
+  // Helper to decode badge string
+  const renderBadge = (badgeString) => {
+    const [name, color] = badgeString.includes('#') ? badgeString.split('#') : [badgeString, 'text-yellow-400'];
+    return { name, color };
   };
 
   const handleCSVExport = () => {
@@ -1721,17 +1770,13 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     reader.readAsText(file);
   };
 
-  // NEW: Handler to open popup at specific coordinates
+  // UPDATED: Handler just opens the modal with user data
   const handleOpenRecognition = (e, row) => {
     e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
     setRecognitionTarget({ 
         id: row.id, 
         name: row.name, 
-        currentAwards: row.awards,
-        // Position popup to the left of the button
-        x: rect.left - 280, 
-        y: rect.top 
+        currentAwards: row.awards
     });
   };
 
@@ -1823,7 +1868,10 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                       <div>
                         <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
                         <div className="flex flex-wrap gap-1 mt-1">
-                          {row.awards.map(a => <span key={a} title={a} className="text-yellow-500 animate-pulse"><Medal size={10}/></span>)}
+                          {row.awards.map(a => {
+                            const { color } = renderBadge(a);
+                            return <span key={a} title={a} className={cn("animate-pulse", color)}><Medal size={10}/></span>
+                          })}
                         </div>
                       </div>
                     </div>
@@ -1884,7 +1932,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
 
                         {isManager && (
                           <>
-                             {/* UPDATED: Trigger Popup */}
                              <button 
                                onClick={(e) => handleOpenRecognition(e, row)}
                                className="p-2 bg-white/5 hover:bg-yellow-500 hover:text-black rounded-full text-zinc-400 transition-all z-10"
@@ -1908,7 +1955,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
               ))}
             </tbody>
 
-            {/* NEW: Team Score Footer */}
+            {/* Team Score Footer */}
             {rows.length > 0 && (
                 <tfoot className="sticky bottom-0 z-40">
                     <tr className="bg-[#E2231A] text-white font-black shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
@@ -1919,7 +1966,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                         </td>
                         {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => {
                             const stat = teamStats?.kpis[k.id];
-                            // Show average of weighted scores
                             const avg = stat && stat.count > 0 ? (stat.sum / stat.count).toFixed(1) : '-';
                             return (
                                 <td key={k.id} className="p-3 text-center border-l border-white/20 font-mono text-xs opacity-90">
@@ -1939,47 +1985,68 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
         </div>
       </Card>
 
-      {/* NEW: POPUP OVERLAY for Recognition */}
+      {/* NEW: CENTERED MODAL FOR RECOGNITION */}
       {recognitionTarget && (
-        <div 
-            className="fixed inset-0 z-[100]" 
-            onClick={() => setRecognitionTarget(null)}
-        >
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in" onClick={() => setRecognitionTarget(null)}>
           <div 
-             className="absolute bg-[#09090b] border border-white/20 rounded-xl shadow-2xl overflow-hidden w-64 animate-fade-in"
-             style={{ 
-               top: recognitionTarget.y, 
-               left: recognitionTarget.x,
-             }}
-             onClick={e => e.stopPropagation()}
+             className="bg-[#09090b] border border-white/20 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[80vh]"
+             onClick={e => e.stopPropagation()} // Prevent closing when clicking inside
           >
-            <div className="bg-[#18181b] p-3 border-b border-white/10 flex justify-between items-center">
-               <span className="text-xs font-bold text-white uppercase tracking-wider">{recognitionTarget.name}</span>
-               <button onClick={() => setRecognitionTarget(null)}><X size={14} className="text-zinc-500 hover:text-white"/></button>
+            {/* Header */}
+            <div className="bg-[#18181b] p-6 border-b border-white/10 flex justify-between items-center shrink-0">
+               <div>
+                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Recognition</h3>
+                 <p className="text-zinc-500 text-xs">Awarding: <span className="text-[#E2231A] font-bold">{recognitionTarget.name}</span></p>
+               </div>
+               <button onClick={() => setRecognitionTarget(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X size={20} className="text-white"/></button>
             </div>
             
-            <div className="max-h-[250px] overflow-y-auto p-2 space-y-1">
-              {awardsList.map(award => {
-                const isActive = recognitionTarget.currentAwards.includes(award);
-                return (
-                  <button 
-                    key={award}
-                    onClick={() => toggleAward(recognitionTarget.id, award, recognitionTarget.currentAwards)}
-                    className={cn(
-                      "w-full flex items-center justify-between p-2 rounded-lg text-xs font-bold transition-all border",
-                      isActive 
-                        ? "bg-[#E2231A]/10 border-[#E2231A] text-white" 
-                        : "bg-transparent border-transparent text-zinc-400 hover:bg-white/5 hover:text-white"
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <Medal size={14} className={isActive ? "text-yellow-500" : "text-zinc-600"} />
-                      {award}
-                    </span>
-                    {isActive && <CheckCircle size={12} className="text-[#E2231A]"/>}
-                  </button>
-                )
-              })}
+            {/* Scrollable List */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                {awardsList.map(badgeStr => {
+                  const { name, color } = renderBadge(badgeStr);
+                  const isActive = recognitionTarget.currentAwards.includes(badgeStr);
+                  return (
+                    <button 
+                      key={badgeStr}
+                      onClick={() => toggleAward(recognitionTarget.id, badgeStr, recognitionTarget.currentAwards)}
+                      className={cn(
+                        "flex flex-col items-center justify-center gap-2 p-4 rounded-xl border transition-all duration-300",
+                        isActive 
+                          ? "bg-[#E2231A] border-[#E2231A] text-white shadow-lg scale-105" 
+                          : "bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10 hover:border-white/20"
+                      )}
+                    >
+                      <Medal size={24} className={isActive ? "text-white animate-bounce" : color} />
+                      <span className="text-xs font-bold uppercase tracking-wide text-center">{name}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Footer: Create New Badge */}
+            <div className="p-4 bg-[#101012] border-t border-white/10 shrink-0">
+               <div className="text-[10px] font-bold text-zinc-500 uppercase mb-2">Create Custom Badge</div>
+               <div className="flex gap-2">
+                 <input 
+                   value={newBadgeName}
+                   onChange={e => setNewBadgeName(e.target.value)}
+                   placeholder="Badge Name..."
+                   className="flex-1 bg-black border border-white/10 rounded-lg px-3 text-xs text-white focus:border-[#E2231A] outline-none"
+                 />
+                 <div className="flex gap-1 bg-black border border-white/10 rounded-lg p-1">
+                   {COLORS.map(c => (
+                     <button 
+                       key={c}
+                       onClick={() => setNewBadgeColor(c)}
+                       className={cn("w-6 h-6 rounded-md transition-transform hover:scale-110", c.replace('text-', 'bg-'), newBadgeColor === c && "ring-2 ring-white")}
+                     />
+                   ))}
+                 </div>
+                 <button onClick={handleAddCustomBadge} className="bg-white hover:bg-zinc-200 text-black p-2 rounded-lg font-bold"><Plus size={16}/></button>
+               </div>
             </div>
           </div>
         </div>
@@ -2182,18 +2249,13 @@ const Leaderboard = ({ members, kpis, data }) => {
     // Safety check to prevent crash if data is missing
     if (!members || !kpis) return [];
 
-    return members.map(m => {
-      const p = data[m.id] || { actuals: {} };
-      let total = 0;
-      kpis.forEach(k => { 
-        // FIX: Added k.steps argument to calculation
-        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type, k.steps); 
-      });
-      
-      return { ...m, total }; 
-    })
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 5);
+    return members.map(m => ({
+        ...m,
+        // UPDATED: Use the shared total score calculation
+        total: calculateTotalScore(data[m.id], kpis)
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
   }, [members, kpis, data]);
 
   return (
