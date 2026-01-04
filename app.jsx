@@ -1225,6 +1225,9 @@ const TeamDashboard = () => {
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
   const isObserver = !isManager && profile.groupId !== activeTeamId;
   
+  // --- NEW: Filter Agents (Exclude Manager from Stats) ---
+  const agents = useMemo(() => members.filter(m => m.role !== 'manager'), [members]);
+
   // --- TEAM MANAGEMENT LOGIC ---
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState(''); 
@@ -1283,22 +1286,22 @@ const TeamDashboard = () => {
     }
   }, [activeTeamId]);
 
-const handleArchiveMonth = async () => {
+  const handleArchiveMonth = async () => {
     if (!confirm("Confirm Archive? This will:\n1. Save current stats to History\n2. Add XP to Agents\n3. This cannot be undone.")) return;
     
     const monthId = new Date().toISOString().slice(0, 7); // YYYY-MM
     const batch = writeBatch(db);
     const statsSnapshot = {};
 
-    // 1. Calculate final scores and prepare XP updates
-    members.forEach(m => {
+    // 1. Calculate final scores and prepare XP updates (Using 'agents' only)
+    agents.forEach(m => {
       const p = performance[m.id] || { actuals: {} };
       let total = 0;
       
       // FIX: Ensure kpis exist before iterating
       if (activeTeam.kpis) {
         activeTeam.kpis.forEach(k => {
-          total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type);
+          total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type, k.steps);
         });
       }
       
@@ -1401,9 +1404,10 @@ const handleArchiveMonth = async () => {
                     <div className="text-2xl font-black text-white">{history.length} <span className="text-sm font-normal text-zinc-500">Months</span></div>
                  </div>
                  <div className="bg-white/5 p-4 rounded-lg">
-                    <div className="text-zinc-500 text-xs uppercase font-bold">Top Rank</div>
+                    <div className="text-zinc-500 text-xs uppercase font-bold">Best Performer</div>
                     <div className="text-2xl font-black text-[#E2231A]">
-                       {members.reduce((max, m) => Math.max(max, getAgentLevel(m.lifetimeXP)), 0)} <span className="text-sm font-normal text-zinc-500">Lvl</span>
+                       {/* UPDATED: Use agents instead of members */}
+                       {agents.reduce((max, m) => Math.max(max, getAgentLevel(m.lifetimeXP)), 0)} <span className="text-sm font-normal text-zinc-500">Lvl</span>
                     </div>
                  </div>
               </div>
@@ -1438,8 +1442,9 @@ const handleArchiveMonth = async () => {
         )}
 
         <div className={cn("space-y-8", isManager ? "xl:col-span-3" : "xl:col-span-4")}>
+          {/* UPDATED: Pass filtered 'agents' list */}
           <PerformanceMatrix 
-            members={members} 
+            members={agents} 
             kpis={activeTeam.kpis || []} 
             data={performance} 
             isManager={isManager} 
@@ -1448,8 +1453,9 @@ const handleArchiveMonth = async () => {
             onRemoveMember={handleRemoveMember} 
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <Leaderboard members={members} kpis={activeTeam.kpis || []} data={performance} />
-            <AwardWall members={members} data={performance} />
+            {/* UPDATED: Pass filtered 'agents' list */}
+            <Leaderboard members={agents} kpis={activeTeam.kpis || []} data={performance} />
+            <AwardWall members={agents} data={performance} />
           </div>
         </div>
       </div>
@@ -1592,7 +1598,7 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
   
-  // NEW: State for the Recognition Modal (Fixes Z-Index Clipping)
+  // UPDATED: State includes coordinates for the popover (x, y)
   const [recognitionTarget, setRecognitionTarget] = useState(null);
 
   const kpiStructure = useMemo(() => {
@@ -1612,7 +1618,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        // UPDATE: Pass 'k.steps' to enable the new Attendance logic
+        // Pass 'k.steps' to enable the new Attendance logic
         const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
         totalScore += weighted;
         return { ...k, val, weighted };
@@ -1621,6 +1627,30 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }).sort((a,b) => b.totalScore - a.totalScore);
   }, [members, data, kpis]);
 
+  // NEW: Calculate Team Averages for the Footer
+  const teamStats = useMemo(() => {
+    if (rows.length === 0) return null;
+    const stats = { totalScore: 0, kpis: {} };
+    
+    // Initialize kpi accumulators
+    kpis.forEach(k => stats.kpis[k.id] = { sum: 0, count: 0 });
+
+    rows.forEach(r => {
+        stats.totalScore += r.totalScore;
+        r.kpiResults.forEach(res => {
+            const val = parseFloat(res.weighted); // We average the weighted scores
+            // Alternatively, average the raw values (res.val) if preferred, 
+            // but weighted score average is usually more consistent for the final total.
+            if (!isNaN(val)) {
+                stats.kpis[res.id].sum += val;
+                stats.kpis[res.id].count++;
+            }
+        });
+    });
+
+    return stats;
+  }, [rows, kpis]);
+
   const updateScore = async (userId, kpiId, val) => {
     const current = data[userId] || { actuals: {}, awards: [] };
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), {
@@ -1628,12 +1658,11 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }, { merge: true });
   };
 
-  // UPDATE: Modified to accept currentAwards for Optimistic UI updates
   const toggleAward = async (userId, award, currentAwards) => {
     const has = currentAwards.includes(award);
     const newAwards = has ? currentAwards.filter(a => a !== award) : [...currentAwards, award];
 
-    // Optimistic UI update for the modal so it feels instant
+    // Optimistic UI update
     if(recognitionTarget && recognitionTarget.id === userId) {
       setRecognitionTarget({ ...recognitionTarget, currentAwards: newAwards });
     }
@@ -1692,6 +1721,20 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     reader.readAsText(file);
   };
 
+  // NEW: Handler to open popup at specific coordinates
+  const handleOpenRecognition = (e, row) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setRecognitionTarget({ 
+        id: row.id, 
+        name: row.name, 
+        currentAwards: row.awards,
+        // Position popup to the left of the button
+        x: rect.left - 280, 
+        y: rect.top 
+    });
+  };
+
   return (
     <>
       <Card 
@@ -1700,7 +1743,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
         className="h-fit"
         action={
           <div className="flex items-center gap-3">
-            <InfoTooltip text="Input monthly actuals here. Scores update automatically based on logic. Import CSV for bulk updates." />
+            <InfoTooltip text="Input monthly actuals. Team Score calculates automatically in footer." />
             {isManager && (
               <div className="flex gap-2">
                 <button 
@@ -1724,30 +1767,24 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
             <thead>
               {/* Top Header Row (Categories) */}
               <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
-                {/* Corner Cell: Sticky Left & Top */}
                 <th className="p-4 bg-[#0c0c0e] sticky left-0 top-0 z-30 w-56 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]"></th>
-                
-                {/* Category Cells: Sticky Top */}
                 {kpiStructure.map(([category, catKpis]) => (
                   <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518]/90 text-[#E2231A] font-black tracking-widest sticky top-0 z-20">
                     {category}
                   </th>
                 ))}
-                
                 <th className="bg-[#0c0c0e]/95 sticky top-0 z-20"></th>
                 <th className="bg-[#0c0c0e] sticky top-0 right-0 z-30 border-l border-white/10 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]"></th>
               </tr>
 
               {/* Second Header Row (Metric Names) */}
               <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/10">
-                {/* Agent Detail Header: Sticky Left & Top */}
                 <th className="p-4 font-bold sticky left-0 top-[33px] z-30 bg-[#0c0c0e] border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
                 
                 {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
                   <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header hover:bg-white/5 transition-colors sticky top-[33px] z-20 bg-[#0c0c0e]/95">
                     <div className="font-bold text-zinc-200">{k.name}</div>
                     <div className="mt-1 opacity-60 flex justify-center gap-1">
-                       {/* Display STEP or Target depending on type */}
                        {k.type === 'step' 
                          ? <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">STEP</span>
                          : <>
@@ -1759,25 +1796,20 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                   </th>
                 ))}
                 <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10 sticky top-[33px] z-20 bg-[#0c0c0e]/95">Total Score</th>
-                
-                {/* Actions Header */}
                 <th className="p-3 text-center w-24 border-l border-white/10 sticky right-0 top-[33px] z-30 bg-[#0c0c0e] shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">Actions</th>            
               </tr>
             </thead>
             <tbody>
               {rows.map((row, idx) => (
                 <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group hover:z-10 relative">
-                  {/* Agent Column: Sticky Left */}
+                  {/* Agent Column */}
                   <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
                     <div className="flex items-center gap-3">
-                      
-                      {/* RANKING BADGE */}
                       <div className="flex flex-col items-center justify-center w-6 shrink-0">
                          <span className={cn("text-xs font-black", idx === 0 ? "text-yellow-400 text-base" : idx === 1 ? "text-zinc-300" : idx === 2 ? "text-amber-700" : "text-zinc-600")}>
                            #{idx + 1}
                          </span>
                       </div>
-
                       {(() => {
                          const lvl = getAgentLevel(row.lifetimeXP);
                          const rank = getAgentRank(lvl);
@@ -1839,7 +1871,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                     </span>
                   </td>
                   
-                  {/* Actions Column: Sticky Right */}
+                  {/* Actions Column */}
                   <td className="p-3 text-center border-l border-white/10 relative sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">
                      <div className="flex items-center justify-center gap-2">
                         <button 
@@ -1852,9 +1884,9 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
 
                         {isManager && (
                           <>
-                             {/* UPDATED: Open Fixed Modal instead of inline dropdown */}
+                             {/* UPDATED: Trigger Popup */}
                              <button 
-                               onClick={() => setRecognitionTarget({ id: row.id, name: row.name, currentAwards: row.awards })}
+                               onClick={(e) => handleOpenRecognition(e, row)}
                                className="p-2 bg-white/5 hover:bg-yellow-500 hover:text-black rounded-full text-zinc-400 transition-all z-10"
                                title="Assign Recognition"
                              >
@@ -1875,24 +1907,58 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                 </tr>
               ))}
             </tbody>
+
+            {/* NEW: Team Score Footer */}
+            {rows.length > 0 && (
+                <tfoot className="sticky bottom-0 z-40">
+                    <tr className="bg-[#E2231A] text-white font-black shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
+                        <td className="p-4 sticky left-0 bg-[#E2231A] z-40 border-r border-white/20">
+                            <div className="flex items-center gap-2 uppercase tracking-widest text-xs">
+                                <Users size={16}/> Team Average
+                            </div>
+                        </td>
+                        {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => {
+                            const stat = teamStats?.kpis[k.id];
+                            // Show average of weighted scores
+                            const avg = stat && stat.count > 0 ? (stat.sum / stat.count).toFixed(1) : '-';
+                            return (
+                                <td key={k.id} className="p-3 text-center border-l border-white/20 font-mono text-xs opacity-90">
+                                    {avg} pts
+                                </td>
+                            );
+                        })}
+                        <td className="p-3 text-center border-l border-white/20 text-lg">
+                            {(teamStats?.totalScore / rows.length).toFixed(1)}%
+                        </td>
+                        <td className="sticky right-0 bg-[#E2231A] border-l border-white/20"></td>
+                    </tr>
+                </tfoot>
+            )}
           </table>
           {rows.length === 0 && <div className="p-10 text-center text-zinc-600 text-sm italic">Initialize agent data via CSV or manual entry.</div>}
         </div>
       </Card>
 
-      {/* FIXED RECOGNITION MODAL OVERLAY */}
+      {/* NEW: POPUP OVERLAY for Recognition */}
       {recognitionTarget && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in" onClick={() => setRecognitionTarget(null)}>
-          <div className="bg-[#09090b] border border-white/20 p-6 rounded-2xl w-full max-w-sm shadow-2xl transform scale-100" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-xl font-bold text-white">Recognize Agent</h3>
-                <p className="text-zinc-500 text-sm">Assign badges to <span className="text-[#E2231A]">{recognitionTarget.name}</span></p>
-              </div>
-              <button onClick={() => setRecognitionTarget(null)}><X size={20} className="text-zinc-500 hover:text-white"/></button>
+        <div 
+            className="fixed inset-0 z-[100]" 
+            onClick={() => setRecognitionTarget(null)}
+        >
+          <div 
+             className="absolute bg-[#09090b] border border-white/20 rounded-xl shadow-2xl overflow-hidden w-64 animate-fade-in"
+             style={{ 
+               top: recognitionTarget.y, 
+               left: recognitionTarget.x,
+             }}
+             onClick={e => e.stopPropagation()}
+          >
+            <div className="bg-[#18181b] p-3 border-b border-white/10 flex justify-between items-center">
+               <span className="text-xs font-bold text-white uppercase tracking-wider">{recognitionTarget.name}</span>
+               <button onClick={() => setRecognitionTarget(null)}><X size={14} className="text-zinc-500 hover:text-white"/></button>
             </div>
             
-            <div className="space-y-2 max-h-[300px] overflow-y-auto">
+            <div className="max-h-[250px] overflow-y-auto p-2 space-y-1">
               {awardsList.map(award => {
                 const isActive = recognitionTarget.currentAwards.includes(award);
                 return (
@@ -1900,17 +1966,17 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                     key={award}
                     onClick={() => toggleAward(recognitionTarget.id, award, recognitionTarget.currentAwards)}
                     className={cn(
-                      "w-full flex items-center justify-between p-4 rounded-xl border transition-all",
+                      "w-full flex items-center justify-between p-2 rounded-lg text-xs font-bold transition-all border",
                       isActive 
                         ? "bg-[#E2231A]/10 border-[#E2231A] text-white" 
-                        : "bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10 hover:border-white/20"
+                        : "bg-transparent border-transparent text-zinc-400 hover:bg-white/5 hover:text-white"
                     )}
                   >
-                    <span className="flex items-center gap-3">
-                      <Medal size={18} className={isActive ? "text-yellow-500" : "text-zinc-600"} />
-                      <span className="font-bold text-sm">{award}</span>
+                    <span className="flex items-center gap-2">
+                      <Medal size={14} className={isActive ? "text-yellow-500" : "text-zinc-600"} />
+                      {award}
                     </span>
-                    {isActive && <CheckCircle size={16} className="text-[#E2231A]"/>}
+                    {isActive && <CheckCircle size={12} className="text-[#E2231A]"/>}
                   </button>
                 )
               })}
@@ -2120,12 +2186,11 @@ const Leaderboard = ({ members, kpis, data }) => {
       const p = data[m.id] || { actuals: {} };
       let total = 0;
       kpis.forEach(k => { 
-        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type); 
+        // FIX: Added k.steps argument to calculation
+        total += calculateScore(p.actuals?.[k.id], k.target, k.direction, k.weight, k.type, k.steps); 
       });
       
-      // --- FIX: THIS RETURN STATEMENT WAS MISSING ---
       return { ...m, total }; 
-      // ----------------------------------------------
     })
     .sort((a, b) => b.total - a.total)
     .slice(0, 5);
