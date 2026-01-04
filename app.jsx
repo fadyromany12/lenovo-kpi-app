@@ -670,17 +670,32 @@ export default function App() {
   );
 }
 
+// REPLACE ChatInterface with this version
+
 const ChatInterface = () => {
   const { messages, activeChannel, sendMessage, isOpen, setIsOpen, setActiveChannel } = useContext(ChatContext);
   const { members, activeTeamId } = useContext(DataContext);
   const { user } = useContext(AuthContext);
   const [input, setInput] = useState('');
-  const [showTeamMenu, setShowTeamMenu] = useState(false); // NEW: Toggle State
+  const [showTeamMenu, setShowTeamMenu] = useState(false);
+  
   const messagesEndRef = useRef(null);
+  const menuRef = useRef(null); // Ref for the menu container
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // FIX 2: Handle Click Outside to close menu reliably
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowTeamMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   if (!isOpen) {
     return (
@@ -704,8 +719,8 @@ const ChatInterface = () => {
           </span>
         </div>
         <div className="flex gap-2 shrink-0">
-           {/* FIXED: Dropdown using Click State instead of Hover */}
-           <div className="relative">
+           {/* FIX: Use Ref for robust menu handling */}
+           <div className="relative" ref={menuRef}>
               <button 
                 className={cn("p-1 rounded transition-colors", showTeamMenu ? "bg-white/20" : "hover:bg-white/20")}
                 onClick={() => setShowTeamMenu(!showTeamMenu)}
@@ -714,7 +729,7 @@ const ChatInterface = () => {
               </button>
               
               {showTeamMenu && (
-                <div className="absolute right-0 top-full mt-2 w-48 bg-black border border-white/20 rounded-lg p-2 max-h-40 overflow-y-auto shadow-xl z-50">
+                <div className="absolute right-0 top-full mt-2 w-48 bg-black border border-white/20 rounded-lg p-2 max-h-40 overflow-y-auto shadow-xl z-50 animate-fade-in">
                   <div 
                      className="p-2 hover:bg-white/10 text-xs text-white cursor-pointer font-bold border-b border-white/10 mb-1"
                      onClick={() => {
@@ -1099,6 +1114,7 @@ const LobbyView = ({ setView, embed = false }) => {
             key={team.id} 
             style={{ animationDelay: `${idx * 100}ms` }}
             onClick={() => {
+              // FIX 4: Navigation Logic
               if (profile.role === 'super_user') setView(`team_view_${team.id}`);
               else if (profile.groupId === team.id) setView('team_dash');
               else setView(`team_view_${team.id}`);
@@ -1126,6 +1142,11 @@ const LobbyView = ({ setView, embed = false }) => {
              <div className="flex items-center gap-2">
                 {profile?.groupId === team.id ? (
                   <span className="text-[10px] font-black bg-[#E2231A] text-white px-3 py-1.5 rounded-full shadow-lg shadow-red-900/40">ASSIGNED UNIT</span>
+                ) : profile.role === 'super_user' ? (
+                  // FIX 4: Visual Badge for Super Users
+                  <span className="text-[10px] font-black bg-zinc-800 text-white px-3 py-1.5 rounded-full border border-white/20 flex items-center gap-1">
+                      <Shield size={12}/> COMMAND MODE
+                  </span>
                 ) : (
                   <span className="text-[10px] font-bold text-zinc-500 group-hover:text-white flex items-center gap-1 transition-colors"><Eye size={12}/> OBSERVE ONLY</span>
                 )}
@@ -1253,26 +1274,98 @@ const TeamDashboard = () => {
   const [history, setHistory] = useState([]); 
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
-
-  // LOGIC FIX: Ensure Super User is ALWAYS a manager, regardless of team assignment
-  const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || profile.role === 'super_user';
-  
-  // Observer: Someone who isn't a manager of this team, and isn't a member of this team
+  const isSuperUser = profile.role === 'super_user';
+  const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || isSuperUser;
   const isObserver = !isManager && profile.groupId !== activeTeamId;
   
-  // Filter Agents: Hide Manager & Self
   const agents = useMemo(() => {
     return members.filter(m => m.role === 'agent' && m.id !== profile.id);
   }, [members, profile.id]);
 
-  // --- TEAM MANAGEMENT LOGIC ---
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState(''); 
 
-  // FIX: Sync state with team name when data loads to prevent empty input
   useEffect(() => {
     if (activeTeam) setNewName(activeTeam.name);
   }, [activeTeam]);
+
+  // --- NEW: GENERATE WHOLE TEAM PDF ---
+  const generateTeamReport = () => {
+    const doc = new jsPDF();
+    const today = new Date().toLocaleDateString();
+    
+    // 1. Cover Page / Summary Table
+    doc.setFontSize(22);
+    doc.setTextColor(226, 35, 26); // #E2231A
+    doc.setFont("helvetica", "bold");
+    doc.text("TEAM PERFORMANCE REPORT", 105, 20, { align: 'center' });
+    
+    doc.setFontSize(12);
+    doc.setTextColor(0);
+    doc.text(`Team: ${activeTeam.name}`, 14, 35);
+    doc.text(`Generated: ${today}`, 14, 42);
+
+    // Prepare Summary Data
+    const summaryData = agents.map((m, idx) => {
+        const total = calculateTotalScore(performance[m.id], activeTeam.kpis);
+        return [idx + 1, m.name, m.email, `${total.toFixed(1)}%`];
+    });
+
+    autoTable(doc, {
+        startY: 50,
+        head: [['Rank', 'Agent Name', 'Email', 'Score']],
+        body: summaryData,
+        theme: 'striped',
+        headStyles: { fillColor: [20, 20, 22], textColor: 255 },
+        styles: { fontSize: 10 },
+        columnStyles: { 3: { fontStyle: 'bold', textColor: [226, 35, 26] } }
+    });
+
+    // 2. Individual Pages Loop
+    agents.forEach((agent) => {
+        doc.addPage();
+        
+        // Background
+        doc.setFillColor(20, 20, 22);
+        doc.rect(0, 0, 210, 30, 'F');
+        
+        doc.setTextColor(255);
+        doc.setFontSize(16);
+        doc.text(agent.name.toUpperCase(), 14, 12);
+        doc.setFontSize(10);
+        doc.setTextColor(180, 180, 180);
+        doc.text(`Individual Scorecard`, 14, 20);
+
+        // Stats
+        const p = performance[agent.id] || { actuals: {} };
+        let totalScore = 0;
+        const kpiRows = activeTeam.kpis.map(k => {
+           const val = p.actuals?.[k.id];
+           const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
+           totalScore += weighted;
+           return [k.name, k.target, val || '-', `${k.weight}%`, weighted.toFixed(1)];
+        });
+
+        // Score Box
+        doc.setFillColor(226, 35, 26);
+        doc.roundedRect(160, 5, 35, 20, 2, 2, 'F');
+        doc.setTextColor(255);
+        doc.setFontSize(14);
+        doc.text(`${totalScore.toFixed(1)}%`, 177.5, 18, { align: 'center' });
+
+        // Table
+        autoTable(doc, {
+            startY: 40,
+            head: [['KPI', 'Target', 'Actual', 'Weight', 'Points']],
+            body: kpiRows,
+            theme: 'grid',
+            headStyles: { fillColor: [226, 35, 26] },
+            foot: [['', '', '', 'TOTAL', totalScore.toFixed(1)]]
+        });
+    });
+
+    doc.save(`Team_Report_${activeTeam.name}_${today}.pdf`);
+  };
 
   const handleRename = async () => {
     if (!newName.trim()) return;
@@ -1285,19 +1378,13 @@ const TeamDashboard = () => {
     const confirmMsg = `WARNING: You are about to DELETE ${activeTeam.name}.\n\nThis will:\n- Disband all ${members.length} agents\n- Delete all history\n\nType "DELETE" to confirm.`;
     if (prompt(confirmMsg) !== "DELETE") return;
 
-    // 1. Free all agents
     const batch = writeBatch(db);
     members.forEach(m => {
        batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'users', m.id), { groupId: null });
     });
-    
-    // 2. Delete Team
     batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId));
-    
     await batch.commit();
     showToast("Team Dissolved. Agents are now free agents.");
-    
-    // Redirect to Lobby
     setView('lobby');
   };
 
@@ -1315,7 +1402,6 @@ const TeamDashboard = () => {
     }
   }, [isManager, activeTeamId]);
 
-  // Fetch History
   useEffect(() => {
     if (activeTeamId) {
       const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'archives'));
@@ -1325,32 +1411,24 @@ const TeamDashboard = () => {
 
   const handleArchiveMonth = async () => {
     if (!confirm("Confirm Archive? This will:\n1. Save current stats to History\n2. Add XP to Agents\n3. This cannot be undone.")) return;
-    
-    const monthId = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const monthId = new Date().toISOString().slice(0, 7); 
     const batch = writeBatch(db);
     const statsSnapshot = {};
 
-    // 1. Calculate final scores and prepare XP updates (Using 'agents' only)
     agents.forEach(m => {
-      // Use shared calculation logic
       const total = calculateTotalScore(performance[m.id], activeTeam.kpis);
-      
-      // Save for history
       statsSnapshot[m.id] = { 
         name: m.name, 
         totalScore: total, 
         actuals: performance[m.id]?.actuals || {},
         awards: performance[m.id]?.awards || []
       };
-
-      // Add XP (Score = XP)
-      const xpEarned = Math.round(total * 10); // 100% = 1000 XP
+      const xpEarned = Math.round(total * 10); 
       const newLifetimeXP = (m.lifetimeXP || 0) + xpEarned;
       const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', m.id);
       batch.update(userRef, { lifetimeXP: newLifetimeXP });
     });
 
-    // 2. Create Archive Doc
     const archiveRef = doc(db, 'artifacts', appId, 'public', 'data', 'groups', activeTeamId, 'archives', monthId);
     batch.set(archiveRef, { stats: statsSnapshot, archivedAt: serverTimestamp() });
 
@@ -1362,16 +1440,19 @@ const TeamDashboard = () => {
 
   return (
     <div className="space-y-8 animate-slide-up">
-      {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-6 border-b border-white/10">
         <div>
            <div className="flex items-center gap-3 text-zinc-500 mb-2">
              <span className="uppercase text-[10px] font-bold tracking-[0.2em] bg-white/5 px-2 py-1 rounded">Team Dashboard</span>
-             {isObserver && <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>}
-             
-             {profile.role === 'super_user' && (
+             {isObserver && !isSuperUser && (
+                <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-1 rounded border border-blue-500/20">READ ONLY MODE</span>
+             )}
+             {isSuperUser && (
+                <span className="bg-[#E2231A]/10 text-[#E2231A] text-[10px] font-bold px-2 py-1 rounded border border-[#E2231A]/20">SUPER USER ACCESS</span>
+             )}
+             {isSuperUser && (
                <select 
-                 className="bg-zinc-800 text-xs text-white p-1 rounded border border-white/10 ml-4"
+                 className="bg-zinc-800 text-xs text-white p-1 rounded border border-white/10 ml-4 cursor-pointer outline-none focus:border-[#E2231A]"
                  value={activeTeamId}
                  onChange={(e) => setView(`team_view_${e.target.value}`)}
                >
@@ -1380,15 +1461,9 @@ const TeamDashboard = () => {
              )}
            </div>
            
-           {/* RENAME LOGIC */}
            {isEditing ? (
              <div className="flex items-center gap-2">
-               <input 
-                 value={newName} 
-                 onChange={e => setNewName(e.target.value)}
-                 className="bg-zinc-800 text-3xl font-black text-white p-2 rounded border border-white/20 outline-none w-full max-w-md"
-                 autoFocus
-               />
+               <input value={newName} onChange={e => setNewName(e.target.value)} className="bg-zinc-800 text-3xl font-black text-white p-2 rounded border border-white/20 outline-none w-full max-w-md" autoFocus />
                <Button size="sm" onClick={handleRename}><CheckCircle size={18}/></Button>
                <Button size="sm" variant="ghost" onClick={() => setIsEditing(false)}><X size={18}/></Button>
              </div>
@@ -1396,9 +1471,7 @@ const TeamDashboard = () => {
              <div className="flex items-center gap-4 group">
                <h2 className="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">{activeTeam.name}</h2>
                {isManager && (
-                 <button onClick={() => { setIsEditing(true); setNewName(activeTeam.name); }} className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-white">
-                   <Edit2 size={20}/>
-                 </button>
+                 <button onClick={() => { setIsEditing(true); setNewName(activeTeam.name); }} className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-white"><Edit2 size={20}/></button>
                )}
              </div>
            )}
@@ -1407,6 +1480,11 @@ const TeamDashboard = () => {
         <div className="flex gap-3">
           {isManager && (
             <>
+              {/* NEW EXPORT BUTTON */}
+              <Button variant="secondary" onClick={generateTeamReport} title="Export Full Team PDF">
+                 <FileSpreadsheet size={16} /> Team Report
+              </Button>
+
               <Button variant="outline" onClick={handleArchiveMonth} title="Finalize Month & Distribute XP">
                 <Save size={16} /> Archive Period
               </Button>
@@ -1415,17 +1493,14 @@ const TeamDashboard = () => {
               </Button>
             </>
           )}
-          {!isManager && !isObserver && !profile.groupId && (
+          {!isManager && !profile.groupId && (
             <RequestJoinButton teamId={activeTeamId} userId={profile.id} userName={profile.name} />
           )}
         </div>
       </div>
 
-      {/* CHARTS & STATS */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-         <div className="md:col-span-2">
-            <TrendChart data={history} kpis={activeTeam.kpis} />
-         </div>
+         <div className="md:col-span-2"><TrendChart data={history} kpis={activeTeam.kpis} /></div>
          <div className="md:col-span-1">
             <Card title="Team Vitality" icon={Activity} className="h-full">
               <div className="flex flex-col justify-center h-full gap-4">
@@ -1436,7 +1511,6 @@ const TeamDashboard = () => {
                  <div className="bg-white/5 p-4 rounded-lg">
                     <div className="text-zinc-500 text-xs uppercase font-bold">Best Performer</div>
                     <div className="text-2xl font-black text-[#E2231A]">
-                       {/* UPDATED: Use filtered agents list */}
                        {agents.reduce((max, m) => Math.max(max, getAgentLevel(m.lifetimeXP)), 0)} <span className="text-sm font-normal text-zinc-500">Lvl</span>
                     </div>
                  </div>
@@ -1472,7 +1546,6 @@ const TeamDashboard = () => {
         )}
 
         <div className={cn("space-y-8", isManager ? "xl:col-span-3" : "xl:col-span-4")}>
-          {/* UPDATED: Pass filtered 'agents' list */}
           <PerformanceMatrix 
             members={agents} 
             kpis={activeTeam.kpis || []} 
@@ -1483,7 +1556,6 @@ const TeamDashboard = () => {
             onRemoveMember={handleRemoveMember} 
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {/* UPDATED: Pass filtered 'agents' list */}
             <Leaderboard members={agents} kpis={activeTeam.kpis || []} data={performance} />
             <AwardWall members={agents} data={performance} />
           </div>
@@ -1625,16 +1697,27 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 };
 
 
+// REPLACE the existing PerformanceMatrix component with this version
+
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
   
-  // UPDATED: State for centered modal (only holds target data, no coordinates needed)
-  const [recognitionTarget, setRecognitionTarget] = useState(null);
+  const [recognitionUI, setRecognitionUI] = useState({ 
+    isOpen: false, targetId: null, targetName: null, currentAwards: [], x: 0, y: 0 
+  });
   
-  // NEW: State for Custom Badge Creator
+  // NEW: Rarity System State
   const [newBadgeName, setNewBadgeName] = useState('');
-  const [newBadgeColor, setNewBadgeColor] = useState('text-yellow-400');
-  const COLORS = ['text-yellow-400', 'text-blue-400', 'text-green-400', 'text-purple-400', 'text-red-400', 'text-pink-400'];
+  const [newBadgeRarity, setNewBadgeRarity] = useState('common');
+
+  // Rarity Config
+  const RARITY = {
+    common: { color: 'text-zinc-400', border: 'border-zinc-500/30', label: 'Common' },
+    rare: { color: 'text-blue-400', border: 'border-blue-500/50', label: 'Rare' },
+    epic: { color: 'text-purple-400', border: 'border-purple-500/50', label: 'Epic' },
+    legendary: { color: 'text-yellow-400', border: 'border-yellow-500/50', label: 'Legendary' },
+    mythic: { color: 'text-red-500', border: 'border-red-600', label: 'Mythic' }
+  };
 
   const kpiStructure = useMemo(() => {
     const groups = {};
@@ -1653,7 +1736,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
       
       const kpiResults = kpis.map(k => {
         const val = p.actuals?.[k.id];
-        // Uses the updated global calculateScore function
         const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
         totalScore += weighted;
         return { ...k, val, weighted };
@@ -1691,11 +1773,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
   const toggleAward = async (userId, award, currentAwards) => {
     const has = currentAwards.includes(award);
     const newAwards = has ? currentAwards.filter(a => a !== award) : [...currentAwards, award];
-
-    // Optimistic UI update
-    if(recognitionTarget && recognitionTarget.id === userId) {
-      setRecognitionTarget({ ...recognitionTarget, currentAwards: newAwards });
-    }
+    setRecognitionUI(prev => ({ ...prev, currentAwards: newAwards }));
 
     const current = data[userId] || { actuals: {}, awards: [] };
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { 
@@ -1703,131 +1781,85 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }, { merge: true });
   };
 
+  // 1. Create with Rarity
   const handleAddCustomBadge = async () => {
     if (!newBadgeName.trim()) return;
-    const badgeId = `${newBadgeName.trim()}#${newBadgeColor}`; // Encode color in ID
-    
-    // Save to Team Settings so it persists
+    const badgeId = `${newBadgeName.trim()}#${newBadgeRarity}`; 
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId), {
         awards: arrayUnion(badgeId)
     });
-    
-    showToast("New Badge Created!");
+    showToast("Badge Created!");
     setNewBadgeName('');
   };
 
-  // Helper to decode badge string
-  const renderBadge = (badgeString) => {
-    const [name, color] = badgeString.includes('#') ? badgeString.split('#') : [badgeString, 'text-yellow-400'];
-    return { name, color };
-  };
+  // 2. Fatal Error Fix: Deep Clean Delete
+  const handleDeleteCustomBadge = async (badgeStr) => {
+    if(!confirm(`Delete badge "${badgeStr.split('#')[0]}"?\n\nThis will remove it from ALL agents who have it.`)) return;
+    
+    const batch = writeBatch(db);
 
-  const handleCSVExport = () => {
-    if (!members.length) return;
-    const headers = ['Email', 'Name', ...kpis.map(k => k.name)].join(',');
-    const rows = members.map(m => {
-      const p = data[m.id] || { actuals: {} };
-      const scores = kpis.map(k => p.actuals?.[k.id] || '').join(',');
-      return `${m.email},${m.name},${scores}`;
-    }).join('\n');
-    const blob = new Blob([headers + '\n' + rows], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Performance_Export_${teamId}_${new Date().toISOString().slice(0,10)}.csv`;
-    link.click();
-  };
+    // A. Remove from Team Global List
+    const teamRef = doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId);
+    batch.update(teamRef, { awards: arrayRemove(badgeStr) });
 
-  const handleCSVUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      const text = evt.target.result;
-      const lines = text.split('\n');
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      const batch = writeBatch(db);
-      let updatedCount = 0;
-      lines.slice(1).forEach(line => {
-        const cols = line.split(',');
-        if (cols.length < 2) return;
-        const email = cols[0].trim();
-        const member = members.find(m => m.email === email);
-        if (member) {
-          const current = data[member.id] || { actuals: {}, awards: [] };
-          const newActuals = { ...current.actuals };
-          kpis.forEach(k => {
-             const idx = headers.indexOf(k.name.toLowerCase());
-             if (idx > -1 && cols[idx]) newActuals[k.id] = cols[idx].trim();
-          });
-          const ref = doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', member.id);
-          batch.set(ref, { ...current, actuals: newActuals }, { merge: true });
-          updatedCount++;
+    // B. Iterate ALL agents and remove if they have it
+    members.forEach(m => {
+        const userPerf = data[m.id];
+        if(userPerf?.awards?.includes(badgeStr)) {
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', m.id);
+            batch.update(ref, { awards: arrayRemove(badgeStr) });
         }
-      });
-      await batch.commit();
-      showToast(`Processed ${updatedCount} agents from CSV`);
-    };
-    reader.readAsText(file);
+    });
+
+    await batch.commit();
+    showToast("Badge Extinguished Forever.");
   };
 
-  // UPDATED: Handler just opens the modal with user data
+  // Helper: Parse Rarity
+  const renderBadge = (badgeString) => {
+    if (!badgeString.includes('#')) return { name: badgeString, ...RARITY.common };
+    const [name, rarityKey] = badgeString.split('#');
+    const style = RARITY[rarityKey] || RARITY.common;
+    return { name, ...style };
+  };
+
   const handleOpenRecognition = (e, row) => {
     e.stopPropagation();
-    setRecognitionTarget({ 
-        id: row.id, 
+    const rect = e.currentTarget.getBoundingClientRect();
+    let left = rect.left - 320; 
+    if (left < 10) left = rect.right + 10; 
+    const top = rect.top;
+
+    setRecognitionUI({ 
+        isOpen: true,
+        targetId: row.id, 
         name: row.name, 
-        currentAwards: row.awards
+        currentAwards: row.awards,
+        x: left,
+        y: top
     });
   };
 
   return (
     <>
-      <Card 
-        title="Performance Matrix" 
-        icon={Activity} 
-        className="h-fit"
-        action={
-          <div className="flex items-center gap-3">
-            <InfoTooltip text="Input monthly actuals. Team Score calculates automatically in footer." />
-            {isManager && (
-              <div className="flex gap-2">
-                <button 
-                   onClick={handleCSVExport}
-                   className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all"
-                   title="Export current view to CSV"
-                >
-                  <Download size={14} /> Export
-                </button>
-                <label className="cursor-pointer bg-zinc-800 hover:bg-[#E2231A] hover:text-white text-xs px-3 py-2 rounded-lg flex items-center gap-2 border border-white/10 transition-all shadow-lg">
-                  <Upload size={14} /> Import CSV
-                  <input type="file" accept=".csv" className="hidden" onChange={handleCSVUpload} />
-                </label>
-              </div>
-            )}
-          </div>
-        }
-      >
+      <Card title="Performance Matrix" icon={Activity} className="h-fit">
         <div className="overflow-x-auto pb-4">
           <table className="w-full text-left border-collapse relative">
             <thead>
-              {/* Top Header Row (Categories) */}
               <tr className="text-[10px] uppercase text-zinc-500 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/5">
-                <th className="p-4 bg-[#0c0c0e] sticky left-0 top-0 z-30 w-56 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]"></th>
+                <th className="p-4 bg-[#0c0c0e] sticky left-0 top-0 z-30 w-56 border-r border-white/5"></th>
                 {kpiStructure.map(([category, catKpis]) => (
                   <th key={category} colSpan={catKpis.length} className="p-2 text-center border-l border-white/10 bg-[#151518]/90 text-[#E2231A] font-black tracking-widest sticky top-0 z-20">
                     {category}
                   </th>
                 ))}
                 <th className="bg-[#0c0c0e]/95 sticky top-0 z-20"></th>
-                <th className="bg-[#0c0c0e] sticky top-0 right-0 z-30 border-l border-white/10 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]"></th>
+                <th className="bg-[#0c0c0e] sticky top-0 right-0 z-30 border-l border-white/10"></th>
               </tr>
-
-              {/* Second Header Row (Metric Names) */}
               <tr className="text-[9px] uppercase text-zinc-400 bg-[#0c0c0e]/95 backdrop-blur-md border-b border-white/10">
-                <th className="p-4 font-bold sticky left-0 top-[33px] z-30 bg-[#0c0c0e] border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">Agent Detail</th>
-                
+                <th className="p-4 font-bold sticky left-0 top-[33px] z-30 bg-[#0c0c0e] border-r border-white/5">Agent Detail</th>
                 {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => (
-                  <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 relative group/header hover:bg-white/5 transition-colors sticky top-[33px] z-20 bg-[#0c0c0e]/95">
+                  <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 sticky top-[33px] z-20 bg-[#0c0c0e]/95">
                     <div className="font-bold text-zinc-200">{k.name}</div>
                     <div className="mt-1 opacity-60 flex justify-center gap-1">
                        {k.type === 'step' 
@@ -1840,14 +1872,13 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                     </div>
                   </th>
                 ))}
-                <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10 sticky top-[33px] z-20 bg-[#0c0c0e]/95">Total Score</th>
-                <th className="p-3 text-center w-24 border-l border-white/10 sticky right-0 top-[33px] z-30 bg-[#0c0c0e] shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">Actions</th>            
+                <th className="p-3 text-center text-[#E2231A] font-black text-xs border-l border-white/10 sticky top-[33px] z-20 bg-[#0c0c0e]/95">Total</th>
+                <th className="p-3 text-center w-24 border-l border-white/10 sticky right-0 top-[33px] z-30 bg-[#0c0c0e]">Actions</th>            
               </tr>
             </thead>
             <tbody>
               {rows.map((row, idx) => (
                 <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group hover:z-10 relative">
-                  {/* Agent Column */}
                   <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
                     <div className="flex items-center gap-3">
                       <div className="flex flex-col items-center justify-center w-6 shrink-0">
@@ -1867,17 +1898,17 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                       })()}
                       <div>
                         <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
+                        {/* Render Badges in Table */}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {row.awards.map(a => {
-                            const { color } = renderBadge(a);
-                            return <span key={a} title={a} className={cn("animate-pulse", color)}><Medal size={10}/></span>
+                            const { color, name } = renderBadge(a);
+                            return <span key={a} title={name} className={cn("animate-pulse", color)}><Medal size={10}/></span>
                           })}
                         </div>
                       </div>
                     </div>
                   </td>
                   
-                  {/* KPI Columns */}
                   {row.kpiResults.map(res => (
                     <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
                       {isManager ? (
@@ -1896,17 +1927,10 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                             <option value="fail">FAIL</option>
                           </select>
                         ) : (
-                          <DebouncedInput 
-                            value={res.val} 
-                            onSave={(val) => updateScore(row.id, res.id, val)}
-                            placeholder={res.type === 'step' ? 'Days' : '-'} 
-                          />
+                          <DebouncedInput value={res.val} onSave={(val) => updateScore(row.id, res.id, val)} placeholder={res.type === 'step' ? 'Days' : '-'} />
                         )
                       ) : (
-                        <span className={cn("font-mono text-sm font-bold", 
-                          res.val === 'fail' ? "text-red-500" : 
-                          res.val === 'pass' ? "text-green-500" : "text-white"
-                        )}>
+                        <span className={cn("font-mono text-sm font-bold", res.val === 'fail' ? "text-red-500" : res.val === 'pass' ? "text-green-500" : "text-white")}>
                           {res.val === 'pass' ? 'PASS' : res.val === 'fail' ? 'FAIL' : (res.val || '-')}
                         </span>
                       )}
@@ -1919,31 +1943,25 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                     </span>
                   </td>
                   
-                  {/* Actions Column */}
                   <td className="p-3 text-center border-l border-white/10 relative sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">
                      <div className="flex items-center justify-center gap-2">
                         <button 
                           onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
                           className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
-                          title="Download PDF"
                         >
                           <FileSpreadsheet size={16}/>
                         </button>
-
                         {isManager && (
                           <>
                              <button 
                                onClick={(e) => handleOpenRecognition(e, row)}
                                className="p-2 bg-white/5 hover:bg-yellow-500 hover:text-black rounded-full text-zinc-400 transition-all z-10"
-                               title="Assign Recognition"
                              >
                                <Crown size={16}/>
                              </button>
-                             
                              <button 
                                onClick={() => onRemoveMember(row.id, row.name)}
                                className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all ml-2"
-                               title="Remove from Team"
                              >
                                <UserMinus size={16}/>
                              </button>
@@ -1954,101 +1972,102 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                 </tr>
               ))}
             </tbody>
-
-            {/* Team Score Footer */}
             {rows.length > 0 && (
                 <tfoot className="sticky bottom-0 z-40">
                     <tr className="bg-[#E2231A] text-white font-black shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
                         <td className="p-4 sticky left-0 bg-[#E2231A] z-40 border-r border-white/20">
-                            <div className="flex items-center gap-2 uppercase tracking-widest text-xs">
-                                <Users size={16}/> Team Average
-                            </div>
+                            <div className="flex items-center gap-2 uppercase tracking-widest text-xs"><Users size={16}/> Team Average</div>
                         </td>
                         {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => {
                             const stat = teamStats?.kpis[k.id];
                             const avg = stat && stat.count > 0 ? (stat.sum / stat.count).toFixed(1) : '-';
-                            return (
-                                <td key={k.id} className="p-3 text-center border-l border-white/20 font-mono text-xs opacity-90">
-                                    {avg} pts
-                                </td>
-                            );
+                            return <td key={k.id} className="p-3 text-center border-l border-white/20 text-sm font-bold opacity-90">{avg}</td>;
                         })}
-                        <td className="p-3 text-center border-l border-white/20 text-lg">
-                            {(teamStats?.totalScore / rows.length).toFixed(1)}%
-                        </td>
+                        <td className="p-3 text-center border-l border-white/20 text-xl font-bold">{(teamStats?.totalScore / rows.length).toFixed(1)}%</td>
                         <td className="sticky right-0 bg-[#E2231A] border-l border-white/20"></td>
                     </tr>
                 </tfoot>
             )}
           </table>
-          {rows.length === 0 && <div className="p-10 text-center text-zinc-600 text-sm italic">Initialize agent data via CSV or manual entry.</div>}
         </div>
       </Card>
 
-      {/* NEW: CENTERED MODAL FOR RECOGNITION */}
-      {recognitionTarget && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in" onClick={() => setRecognitionTarget(null)}>
-          <div 
-             className="bg-[#09090b] border border-white/20 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[80vh]"
-             onClick={e => e.stopPropagation()} // Prevent closing when clicking inside
-          >
-            {/* Header */}
-            <div className="bg-[#18181b] p-6 border-b border-white/10 flex justify-between items-center shrink-0">
+      {recognitionUI.isOpen && (
+        <div 
+          className="fixed z-[9999] bg-[#09090b] border border-white/20 rounded-xl shadow-2xl flex flex-col animate-fade-in"
+          style={{ top: recognitionUI.y, left: recognitionUI.x, width: '350px', height: '450px', resize: 'both', overflow: 'hidden' }}
+          onClick={e => e.stopPropagation()}
+        >
+            <div className="bg-[#18181b] p-3 border-b border-white/10 flex justify-between items-center shrink-0 cursor-move">
                <div>
-                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Recognition</h3>
-                 <p className="text-zinc-500 text-xs">Awarding: <span className="text-[#E2231A] font-bold">{recognitionTarget.name}</span></p>
+                 <h3 className="text-sm font-black text-white uppercase">Recognition</h3>
+                 <p className="text-zinc-500 text-[10px]">For: <span className="text-[#E2231A] font-bold">{recognitionUI.name}</span></p>
                </div>
-               <button onClick={() => setRecognitionTarget(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X size={20} className="text-white"/></button>
+               <button onClick={() => setRecognitionUI(prev => ({ ...prev, isOpen: false }))} className="p-1 hover:bg-white/10 rounded-full"><X size={16} className="text-white"/></button>
             </div>
             
-            {/* Scrollable List */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-2">
-              <div className="grid grid-cols-2 gap-3">
+            <div className="flex-1 overflow-y-auto p-3 bg-black/50">
+              <div className="grid grid-cols-2 gap-2">
                 {awardsList.map(badgeStr => {
-                  const { name, color } = renderBadge(badgeStr);
-                  const isActive = recognitionTarget.currentAwards.includes(badgeStr);
+                  const { name, color, border } = renderBadge(badgeStr);
+                  const isActive = recognitionUI.currentAwards.includes(badgeStr);
                   return (
-                    <button 
-                      key={badgeStr}
-                      onClick={() => toggleAward(recognitionTarget.id, badgeStr, recognitionTarget.currentAwards)}
-                      className={cn(
-                        "flex flex-col items-center justify-center gap-2 p-4 rounded-xl border transition-all duration-300",
-                        isActive 
-                          ? "bg-[#E2231A] border-[#E2231A] text-white shadow-lg scale-105" 
-                          : "bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10 hover:border-white/20"
-                      )}
-                    >
-                      <Medal size={24} className={isActive ? "text-white animate-bounce" : color} />
-                      <span className="text-xs font-bold uppercase tracking-wide text-center">{name}</span>
-                    </button>
+                    <div key={badgeStr} className="relative group">
+                        <button 
+                          onClick={() => toggleAward(recognitionUI.targetId, badgeStr, recognitionUI.currentAwards)}
+                          className={cn(
+                            "w-full flex flex-col items-center justify-center gap-1 p-3 rounded-lg border transition-all duration-200",
+                            isActive 
+                              ? "bg-zinc-800 border-white text-white shadow-lg" 
+                              : `bg-white/5 hover:bg-white/10 ${border} ${color}`
+                          )}
+                        >
+                          <Medal size={20} className={isActive ? "text-white" : color} />
+                          <span className="text-[10px] font-bold uppercase text-center truncate w-full">{name}</span>
+                        </button>
+                        <button 
+                           onClick={(e) => { e.stopPropagation(); handleDeleteCustomBadge(badgeStr); }}
+                           className="absolute top-1 right-1 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-black/80 rounded"
+                           title="Delete Badge"
+                        >
+                           <Trash size={10} />
+                        </button>
+                    </div>
                   )
                 })}
               </div>
             </div>
 
-            {/* Footer: Create New Badge */}
-            <div className="p-4 bg-[#101012] border-t border-white/10 shrink-0">
-               <div className="text-[10px] font-bold text-zinc-500 uppercase mb-2">Create Custom Badge</div>
+            {/* NEW: Rarity Selector UI */}
+            <div className="p-3 bg-[#101012] border-t border-white/10 shrink-0 space-y-2">
                <div className="flex gap-2">
                  <input 
-                   value={newBadgeName}
-                   onChange={e => setNewBadgeName(e.target.value)}
-                   placeholder="Badge Name..."
-                   className="flex-1 bg-black border border-white/10 rounded-lg px-3 text-xs text-white focus:border-[#E2231A] outline-none"
+                   value={newBadgeName} onChange={e => setNewBadgeName(e.target.value)} placeholder="New Badge Name..."
+                   className="flex-1 bg-black border border-white/10 rounded px-2 py-1 text-xs text-white focus:border-[#E2231A] outline-none"
                  />
-                 <div className="flex gap-1 bg-black border border-white/10 rounded-lg p-1">
-                   {COLORS.map(c => (
-                     <button 
-                       key={c}
-                       onClick={() => setNewBadgeColor(c)}
-                       className={cn("w-6 h-6 rounded-md transition-transform hover:scale-110", c.replace('text-', 'bg-'), newBadgeColor === c && "ring-2 ring-white")}
-                     />
-                   ))}
-                 </div>
-                 <button onClick={handleAddCustomBadge} className="bg-white hover:bg-zinc-200 text-black p-2 rounded-lg font-bold"><Plus size={16}/></button>
+                 <button onClick={handleAddCustomBadge} className="bg-white hover:bg-zinc-200 text-black px-2 rounded font-bold"><Plus size={14}/></button>
                </div>
+               <div className="grid grid-cols-5 gap-1">
+                 {Object.keys(RARITY).map(rKey => {
+                    const r = RARITY[rKey];
+                    return (
+                      <button 
+                        key={rKey}
+                        onClick={() => setNewBadgeRarity(rKey)}
+                        className={cn(
+                          "h-6 rounded text-[8px] font-black uppercase border transition-all",
+                          newBadgeRarity === rKey ? `${r.color} ${r.border} bg-white/10 ring-1 ring-white` : "text-zinc-600 border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
+                        )}
+                        title={r.label}
+                      >
+                         {r.label[0]}
+                      </button>
+                    )
+                 })}
+               </div>
+               <div className="text-[9px] text-zinc-500 text-center uppercase tracking-widest font-bold">{RARITY[newBadgeRarity].label} Tier</div>
             </div>
-          </div>
+            <div className="absolute bottom-1 right-1 pointer-events-none opacity-50"><ArrowUpRight size={10} className="rotate-90 text-zinc-500"/></div>
         </div>
       )}
     </>
@@ -2286,22 +2305,52 @@ const Leaderboard = ({ members, kpis, data }) => {
 };
 
 const AwardWall = ({ members, data }) => {
+  // Parsing Helper (same as PerformanceMatrix)
+  const renderBadge = (badgeString) => {
+    if (!badgeString.includes('#')) return { name: badgeString, color: 'text-zinc-400', border: 'border-zinc-500/30' };
+    const [name, rarityKey] = badgeString.split('#');
+    
+    // Map Rarity to Styles
+    const rarityMap = {
+      common: { color: 'text-zinc-400', border: 'border-zinc-500/30' },
+      rare: { color: 'text-blue-400', border: 'border-blue-500/50' },
+      epic: { color: 'text-purple-400', border: 'border-purple-500/50' },
+      legendary: { color: 'text-yellow-400', border: 'border-yellow-500/50' },
+      mythic: { color: 'text-red-500', border: 'border-red-600' }
+    };
+
+    const style = rarityMap[rarityKey] || rarityMap.common;
+    return { name, ...style };
+  };
+
   const all = useMemo(() => {
     let list = [];
-    members.forEach(m => { (data[m.id]?.awards || []).forEach(a => list.push({ user: m.name, award: a })); });
+    members.forEach(m => { 
+        (data[m.id]?.awards || []).forEach(a => {
+            list.push({ user: m.name, rawBadge: a }); 
+        }); 
+    });
     return list;
   }, [members, data]);
 
   return (
     <Card title="Hall of Fame" icon={Sparkles} className="h-full">
       <div className="flex flex-wrap gap-2 content-start">
-        {all.map((item, i) => (
-          <div key={i} style={{ animationDelay: `${i * 50}ms` }} className="animate-fade-in flex items-center gap-2 bg-gradient-to-r from-yellow-900/20 to-transparent border border-yellow-500/20 pl-2 pr-3 py-1.5 rounded-full hover:border-yellow-500/50 transition-colors cursor-default group">
-            <Medal size={12} className="text-yellow-500 group-hover:rotate-12 transition-transform" />
-            <span className="text-xs font-bold text-zinc-300">{item.user}</span>
-            <span className="text-[10px] text-yellow-600 uppercase tracking-wide border-l border-yellow-500/20 pl-2 ml-1 font-bold">{item.award}</span>
-          </div>
-        ))}
+        {all.map((item, i) => {
+          const { name, color, border } = renderBadge(item.rawBadge);
+          return (
+            <div key={i} style={{ animationDelay: `${i * 50}ms` }} className={cn(
+                "animate-fade-in flex items-center gap-2 bg-black/40 border pl-2 pr-3 py-1.5 rounded-full hover:bg-white/5 transition-colors cursor-default group",
+                border
+            )}>
+                <Medal size={12} className={cn("group-hover:rotate-12 transition-transform", color)} />
+                <span className="text-xs font-bold text-zinc-300">{item.user}</span>
+                <span className={cn("text-[10px] uppercase tracking-wide border-l border-white/10 pl-2 ml-1 font-bold", color)}>
+                   {name}
+                </span>
+            </div>
+          );
+        })}
         {all.length === 0 && <div className="w-full text-center py-8 text-zinc-600 italic">No distinctions awarded yet.</div>}
       </div>
     </Card>
