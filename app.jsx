@@ -383,14 +383,25 @@ const getAgentRank = (level) => {
   return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
 };
 
-const getBadgeIcon = (rarity, size = 14, className) => {
-  const cn = className || "";
+const getBadgeIcon = (rarity, size = 14, className = "") => {
+  // Define color mapping based on rarity
+  const rarityColors = {
+    mythic: 'text-red-500',
+    legendary: 'text-yellow-400',
+    epic: 'text-purple-400',
+    rare: 'text-blue-400',
+    common: 'text-zinc-400'
+  };
+
+  // Combine the rarity color with any extra classes passed (like animate-pulse)
+  const finalClass = cn(rarityColors[rarity] || rarityColors.common, className);
+
   switch (rarity) {
-    case 'mythic': return <Crown size={size} className={cn} />;
-    case 'legendary': return <Trophy size={size} className={cn} />;
-    case 'epic': return <Award size={size} className={cn} />;
-    case 'rare': return <Star size={size} className={cn} />;
-    default: return <Medal size={size} className={cn} />;
+    case 'mythic': return <Crown size={size} className={finalClass} />;
+    case 'legendary': return <Trophy size={size} className={finalClass} />;
+    case 'epic': return <Award size={size} className={finalClass} />;
+    case 'rare': return <Star size={size} className={finalClass} />;
+    default: return <Medal size={size} className={finalClass} />;
   }
 };
 
@@ -1286,9 +1297,11 @@ const TeamDashboard = () => {
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
   const isSuperUser = profile.role === 'super_user';
+  // Updated isManager to check if the user is the actual manager OR a super user
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || isSuperUser;
-  const isObserver = !isManager && profile.groupId !== activeTeamId;
-  
+  // Updated isObserver so Super Users are NEVER observers (they are always managers)
+  const isObserver = isSuperUser ? false : (!isManager && profile.groupId !== activeTeamId);
+
   const agents = useMemo(() => {
     return members.filter(m => m.role === 'agent' && m.id !== profile.id);
   }, [members, profile.id]);
@@ -1842,11 +1855,9 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     isOpen: false, targetId: null, targetName: null, currentAwards: [], x: 0, y: 0 
   });
   
-  // NEW: Rarity System State
   const [newBadgeName, setNewBadgeName] = useState('');
   const [newBadgeRarity, setNewBadgeRarity] = useState('common');
 
-  // Rarity Config
   const RARITY = {
     common: { color: 'text-zinc-400', border: 'border-zinc-500/30', label: 'Common' },
     rare: { color: 'text-blue-400', border: 'border-blue-500/50', label: 'Rare' },
@@ -1895,7 +1906,6 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
             }
         });
     });
-
     return stats;
   }, [rows, kpis]);
 
@@ -1917,7 +1927,17 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     }, { merge: true });
   };
 
-  // 1. Create with Rarity
+  // FIX 1: CLEAR ALL MEDALS FUNCTION
+  const clearAllAwards = async (userId) => {
+    if (!confirm(`Are you sure you want to strip all medals from ${recognitionUI.name}?`)) return;
+    const current = data[userId] || { actuals: {}, awards: [] };
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { 
+      ...current, awards: [] 
+    }, { merge: true });
+    setRecognitionUI(prev => ({ ...prev, currentAwards: [] }));
+    showToast("All medals removed.");
+  };
+
   const handleAddCustomBadge = async () => {
     if (!newBadgeName.trim()) return;
     const badgeId = `${newBadgeName.trim()}#${newBadgeRarity}`; 
@@ -1928,17 +1948,11 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
     setNewBadgeName('');
   };
 
-  // 2. Fatal Error Fix: Deep Clean Delete
   const handleDeleteCustomBadge = async (badgeStr) => {
-    if(!confirm(`Delete badge "${badgeStr.split('#')[0]}"?\n\nThis will remove it from ALL agents who have it.`)) return;
-    
+    if(!confirm(`Delete badge "${badgeStr.split('#')[0]}"?\n\nThis will remove it from ALL agents.`)) return;
     const batch = writeBatch(db);
-
-    // A. Remove from Team Global List
     const teamRef = doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId);
     batch.update(teamRef, { awards: arrayRemove(badgeStr) });
-
-    // B. Iterate ALL agents and remove if they have it
     members.forEach(m => {
         const userPerf = data[m.id];
         if(userPerf?.awards?.includes(badgeStr)) {
@@ -1946,12 +1960,10 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
             batch.update(ref, { awards: arrayRemove(badgeStr) });
         }
     });
-
     await batch.commit();
-    showToast("Badge Extinguished Forever.");
+    showToast("Badge deleted.");
   };
 
-  // Helper: Parse Rarity
   const renderBadge = (badgeString) => {
     if (!badgeString.includes('#')) return { name: badgeString, rarity: 'common', ...RARITY.common };
     const [name, rarityKey] = badgeString.split('#');
@@ -1962,17 +1974,15 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
   const handleOpenRecognition = (e, row) => {
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
-    let left = rect.left - 320; 
+    let left = rect.left - 360; 
     if (left < 10) left = rect.right + 10; 
-    const top = rect.top;
-
     setRecognitionUI({ 
         isOpen: true,
         targetId: row.id, 
         name: row.name, 
         currentAwards: row.awards,
         x: left,
-        y: top
+        y: rect.top
     });
   };
 
@@ -1998,13 +2008,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                   <th key={k.id} className="p-3 text-center min-w-[120px] border-l border-white/5 sticky top-[33px] z-20 bg-[#0c0c0e]/95">
                     <div className="font-bold text-zinc-200">{k.name}</div>
                     <div className="mt-1 opacity-60 flex justify-center gap-1">
-                       {k.type === 'step' 
-                         ? <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">STEP</span>
-                         : <>
-                             <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
-                             <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.type === 'binary' ? 'P/F' : `T: ${k.target}`}</span>
-                           </>
-                       }
+                       <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.weight}%</span>
+                       <span className="bg-white/5 px-1.5 py-0.5 rounded text-[8px]">{k.type === 'binary' ? 'P/F' : `T: ${k.target}`}</span>
                     </div>
                   </th>
                 ))}
@@ -2014,120 +2019,57 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
             </thead>
             <tbody>
               {rows.map((row, idx) => (
-                <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group hover:z-10 relative">
-                  <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5 shadow-[5px_0_20px_rgba(0,0,0,0.5)]">
+                <tr key={row.id} className="border-b border-white/5 hover:bg-white/5 transition-all duration-300 group relative">
+                  <td className="p-4 sticky left-0 bg-[#09090b] group-hover:bg-[#1a1a1c] transition-colors z-20 border-r border-white/5">
                     <div className="flex items-center gap-3">
-                      <div className="flex flex-col items-center justify-center w-6 shrink-0">
-                         <span className={cn("text-xs font-black", idx === 0 ? "text-yellow-400 text-base" : idx === 1 ? "text-zinc-300" : idx === 2 ? "text-amber-700" : "text-zinc-600")}>
-                           #{idx + 1}
-                         </span>
-                      </div>
-                      {(() => {
-                         const lvl = getAgentLevel(row.lifetimeXP);
-                         const rank = getAgentRank(lvl);
-                         return (
-                           <div className={cn("w-10 h-10 rounded-lg flex flex-col items-center justify-center border transition-colors relative overflow-hidden shrink-0", rank.bg, rank.border)}>
-                              <span className={cn("text-[8px] uppercase font-black tracking-widest", rank.color)}>{rank.name}</span>
-                              <span className="text-sm font-bold text-white">{lvl}</span>
-                           </div>
-                         );
-                      })()}
+                      <span className={cn("text-xs font-black", idx === 0 ? "text-yellow-400" : "text-zinc-600")}>#{idx + 1}</span>
                       <div>
                         <div className="font-bold text-sm text-white group-hover:text-[#E2231A] transition-colors">{row.name}</div>
-                        {/* Render Badges in Table */}
+                        {/* FIX 2: RARITY COLORS IN MATRIX */}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {row.awards.map(a => {
-                            const { color, name, rarity } = renderBadge(a);
+                            const { rarity } = renderBadge(a); // This extracts the rarity from "Name#rarity"
                             return (
-                                <span key={a} title={name} className={cn("animate-pulse", color)}>
-                                    {getBadgeIcon(rarity, 10)}
-                                </span>
+                              <span key={a} className="animate-pulse">
+                                {getBadgeIcon(rarity, 12)}
+                              </span>
                             );
                           })}
                         </div>
                       </div>
                     </div>
                   </td>
-                  
                   {row.kpiResults.map(res => (
-                    <td key={res.id} className="p-3 text-center align-middle relative border-l border-white/5">
+                    <td key={res.id} className="p-3 text-center align-middle border-l border-white/5">
                       {isManager ? (
                         res.type === 'binary' ? (
-                          <select
-                            value={res.val || ''}
-                            onChange={(e) => updateScore(row.id, res.id, e.target.value)}
-                            className={cn(
-                              "bg-black/40 border text-[10px] font-bold uppercase p-2 rounded outline-none w-24 text-center cursor-pointer",
-                              res.val === 'pass' ? "border-green-500/50 text-green-500" : 
-                              res.val === 'fail' ? "border-red-500/50 text-red-500" : "border-white/10 text-zinc-500"
-                            )}
-                          >
+                          <select value={res.val || ''} onChange={(e) => updateScore(row.id, res.id, e.target.value)} className="bg-black/40 border text-[10px] font-bold uppercase p-2 rounded w-24 text-center">
                             <option value="">-</option>
                             <option value="pass">PASS</option>
                             <option value="fail">FAIL</option>
                           </select>
                         ) : (
-                          <DebouncedInput value={res.val} onSave={(val) => updateScore(row.id, res.id, val)} placeholder={res.type === 'step' ? 'Days' : '-'} />
+                          <DebouncedInput value={res.val} onSave={(val) => updateScore(row.id, res.id, val)} placeholder="-" />
                         )
                       ) : (
-                        <span className={cn("font-mono text-sm font-bold", res.val === 'fail' ? "text-red-500" : res.val === 'pass' ? "text-green-500" : "text-white")}>
-                          {res.val === 'pass' ? 'PASS' : res.val === 'fail' ? 'FAIL' : (res.val || '-')}
-                        </span>
+                        <span className="font-mono text-sm font-bold text-white">{res.val || '-'}</span>
                       )}
                     </td>
                   ))}
-
-                  <td className="p-3 text-center font-black text-xl text-white group-hover:scale-110 transition-transform origin-center border-l border-white/10">
-                    <span className={cn(row.totalScore >= 100 ? "text-[#E2231A] drop-shadow-[0_0_10px_rgba(226,35,26,0.5)]" : "text-white")}>
-                      {row.totalScore.toFixed(1)}%
-                    </span>
+                  <td className="p-3 text-center font-black text-xl text-white border-l border-white/10">
+                    <span className={row.totalScore >= 100 ? "text-[#E2231A]" : "text-white"}>{row.totalScore.toFixed(1)}%</span>
                   </td>
-                  
-                  <td className="p-3 text-center border-l border-white/10 relative sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20 shadow-[-5px_0_20px_rgba(0,0,0,0.5)]">
+                  <td className="p-3 text-center border-l border-white/10 sticky right-0 bg-[#09090b] group-hover:bg-[#1a1a1c] z-20">
                      <div className="flex items-center justify-center gap-2">
-                        <button 
-                          onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)}
-                          className="p-2 bg-white/5 hover:bg-[#E2231A] hover:text-white rounded-full text-zinc-400 transition-all z-10"
-                        >
-                          <FileSpreadsheet size={16}/>
-                        </button>
+                        <button onClick={() => generateAgentReport(row, kpis, row.kpiResults, row.totalScore, row.awards, teamId)} className="p-2 bg-white/5 hover:bg-[#E2231A] rounded-full"><FileSpreadsheet size={16}/></button>
                         {isManager && (
-                          <>
-                             <button 
-                               onClick={(e) => handleOpenRecognition(e, row)}
-                               className="p-2 bg-white/5 hover:bg-yellow-500 hover:text-black rounded-full text-zinc-400 transition-all z-10"
-                             >
-                               <Crown size={16}/>
-                             </button>
-                             <button 
-                               onClick={() => onRemoveMember(row.id, row.name)}
-                               className="p-2 bg-white/5 hover:bg-red-500/20 hover:text-red-500 rounded-full text-zinc-400 transition-all ml-2"
-                             >
-                               <UserMinus size={16}/>
-                             </button>
-                          </>
+                          <button onClick={(e) => handleOpenRecognition(e, row)} className="p-2 bg-white/5 hover:bg-yellow-500 rounded-full text-zinc-400 hover:text-black"><Crown size={16}/></button>
                         )}
                      </div>
                   </td>
                 </tr>
               ))}
             </tbody>
-            {rows.length > 0 && (
-                <tfoot className="sticky bottom-0 z-40">
-                    <tr className="bg-[#E2231A] text-white font-black shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
-                        <td className="p-4 sticky left-0 bg-[#E2231A] z-40 border-r border-white/20">
-                            <div className="flex items-center gap-2 uppercase tracking-widest text-xs"><Users size={16}/> Team Average</div>
-                        </td>
-                        {kpiStructure.flatMap(([_, catKpis]) => catKpis).map(k => {
-                            const stat = teamStats?.kpis[k.id];
-                            const avg = stat && stat.count > 0 ? (stat.sum / stat.count).toFixed(1) : '-';
-                            return <td key={k.id} className="p-3 text-center border-l border-white/20 text-sm font-bold opacity-90">{avg}</td>;
-                        })}
-                        <td className="p-3 text-center border-l border-white/20 text-xl font-bold">{(teamStats?.totalScore / rows.length).toFixed(1)}%</td>
-                        <td className="sticky right-0 bg-[#E2231A] border-l border-white/20"></td>
-                    </tr>
-                </tfoot>
-            )}
           </table>
         </div>
       </Card>
@@ -2135,17 +2077,23 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
       {recognitionUI.isOpen && (
         <div 
           className="fixed z-[9999] bg-[#09090b] border border-white/20 rounded-xl shadow-2xl flex flex-col animate-fade-in"
-          style={{ top: recognitionUI.y, left: recognitionUI.x, width: '350px', height: '450px', resize: 'both', overflow: 'hidden' }}
-          onClick={e => e.stopPropagation()}
+          style={{ top: recognitionUI.y, left: recognitionUI.x, width: '350px', height: '450px' }}
         >
-            <div className="bg-[#18181b] p-3 border-b border-white/10 flex justify-between items-center shrink-0 cursor-move">
+            <div className="bg-[#18181b] p-3 border-b border-white/10 flex justify-between items-center">
                <div>
-                 <h3 className="text-sm font-black text-white uppercase">Recognition</h3>
-                 <p className="text-zinc-500 text-[10px]">For: <span className="text-[#E2231A] font-bold">{recognitionUI.name}</span></p>
+                 <h3 className="text-sm font-black text-white uppercase">Medals: {recognitionUI.name}</h3>
                </div>
-               <button onClick={() => setRecognitionUI(prev => ({ ...prev, isOpen: false }))} className="p-1 hover:bg-white/10 rounded-full"><X size={16} className="text-white"/></button>
+               <div className="flex items-center gap-2">
+                 {/* FIX 1: CLEAR ALL BUTTON */}
+                 <button 
+                   onClick={() => clearAllAwards(recognitionUI.targetId)}
+                   className="text-[9px] bg-red-950/50 text-red-400 border border-red-900/50 px-2 py-1 rounded hover:bg-red-500 hover:text-white transition-all font-bold uppercase"
+                 >
+                   Clear All
+                 </button>
+                 <button onClick={() => setRecognitionUI(prev => ({ ...prev, isOpen: false }))} className="p-1 hover:bg-white/10 rounded-full"><X size={16} className="text-white"/></button>
+               </div>
             </div>
-            
             <div className="flex-1 overflow-y-auto p-3 bg-black/50">
               <div className="grid grid-cols-2 gap-2">
                 {awardsList.map(badgeStr => {
@@ -2153,63 +2101,29 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                   const isActive = recognitionUI.currentAwards.includes(badgeStr);
                   return (
                     <div key={badgeStr} className="relative group">
-                        <button 
-                          onClick={() => toggleAward(recognitionUI.targetId, badgeStr, recognitionUI.currentAwards)}
-                          className={cn(
-                            "w-full flex flex-col items-center justify-center gap-1 p-3 rounded-lg border transition-all duration-200",
-                            isActive 
-                              ? "bg-zinc-800 border-white text-white shadow-lg" 
-                              : `bg-white/5 hover:bg-white/10 ${border} ${color}`
-                          )}
-                        >
-                          {/* Use Helper for Icon */}
-                          {getBadgeIcon(rarity, 20, isActive ? "text-white" : color)}
-                          <span className="text-[10px] font-bold uppercase text-center truncate w-full">{name}</span>
+                        <button onClick={() => toggleAward(recognitionUI.targetId, badgeStr, recognitionUI.currentAwards)} className={cn("w-full flex flex-col items-center p-3 rounded-lg border transition-all", isActive ? "bg-zinc-800 border-white" : `bg-white/5 ${border} ${color}`)}>
+                          {getBadgeIcon(rarity, 20)}
+                          <span className="text-[10px] font-bold uppercase mt-1 text-center truncate w-full">{name}</span>
                         </button>
-                        <button 
-                           onClick={(e) => { e.stopPropagation(); handleDeleteCustomBadge(badgeStr); }}
-                           className="absolute top-1 right-1 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-black/80 rounded"
-                           title="Delete Badge"
-                        >
-                           <Trash size={10} />
-                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteCustomBadge(badgeStr); }} className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-zinc-600 hover:text-red-500"><Trash size={10} /></button>
                     </div>
                   )
                 })}
               </div>
             </div>
-
-            {/* NEW: Rarity Selector UI */}
-            <div className="p-3 bg-[#101012] border-t border-white/10 shrink-0 space-y-2">
+            <div className="p-3 bg-[#101012] border-t border-white/10 space-y-2">
                <div className="flex gap-2">
-                 <input 
-                   value={newBadgeName} onChange={e => setNewBadgeName(e.target.value)} placeholder="New Badge Name..."
-                   className="flex-1 bg-black border border-white/10 rounded px-2 py-1 text-xs text-white focus:border-[#E2231A] outline-none"
-                 />
-                 <button onClick={handleAddCustomBadge} className="bg-white hover:bg-zinc-200 text-black px-2 rounded font-bold"><Plus size={14}/></button>
+                 <input value={newBadgeName} onChange={e => setNewBadgeName(e.target.value)} placeholder="New Medal Name..." className="flex-1 bg-black border border-white/10 rounded px-2 py-1 text-xs text-white" />
+                 <button onClick={handleAddCustomBadge} className="bg-white hover:bg-[#E2231A] text-black hover:text-white px-2 rounded"><Plus size={14}/></button>
                </div>
                <div className="grid grid-cols-5 gap-1">
-                 {Object.keys(RARITY).map(rKey => {
-                    const r = RARITY[rKey];
-                    return (
-                      <button 
-                        key={rKey}
-                        onClick={() => setNewBadgeRarity(rKey)}
-                        className={cn(
-                          "h-6 rounded text-[8px] font-black uppercase border transition-all",
-                          newBadgeRarity === rKey ? `${r.color} ${r.border} bg-white/10 ring-1 ring-white` : "text-zinc-600 border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
-                        )}
-                        title={r.label}
-                      >
-                         {/* Render specific icon for the selector button */}
-                         {getBadgeIcon(rKey, 10)}
-                      </button>
-                    )
-                 })}
+                 {Object.keys(RARITY).map(rKey => (
+                    <button key={rKey} onClick={() => setNewBadgeRarity(rKey)} className={cn("h-6 rounded text-[8px] font-black uppercase border transition-all", newBadgeRarity === rKey ? `${RARITY[rKey].color} border-white bg-white/10` : "text-zinc-600 border-zinc-800")}>
+                      {rKey.charAt(0)}
+                    </button>
+                 ))}
                </div>
-               <div className="text-[9px] text-zinc-500 text-center uppercase tracking-widest font-bold">{RARITY[newBadgeRarity].label} Tier</div>
             </div>
-            <div className="absolute bottom-1 right-1 pointer-events-none opacity-50"><ArrowUpRight size={10} className="rotate-90 text-zinc-500"/></div>
         </div>
       )}
     </>
@@ -2446,13 +2360,31 @@ const Leaderboard = ({ members, kpis, data }) => {
   );
 };
 
+
+ const clearAllAwards = async (userId) => {
+  if (!confirm(`Strip all medals from ${recognitionUI.name}?`)) return;
+  const current = data[userId] || { actuals: {}, awards: [] };
+  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'groups', teamId, 'performance', userId), { 
+    ...current, awards: [] 
+  }, { merge: true });
+  setRecognitionUI(prev => ({ ...prev, currentAwards: [] }));
+  showToast("All medals removed.");
+ };
+
 const AwardWall = ({ members, data }) => {
-  // Parsing Helper (same as PerformanceMatrix)
+  // Parsing Helper to extract name and rarity from the badge string
   const renderBadge = (badgeString) => {
-    if (!badgeString.includes('#')) return { name: badgeString, color: 'text-zinc-400', border: 'border-zinc-500/30', rarity: 'common' };
+    if (!badgeString.includes('#')) {
+      return { 
+        name: badgeString, 
+        color: 'text-zinc-400', 
+        border: 'border-zinc-500/30', 
+        rarity: 'common' 
+      };
+    }
     const [name, rarityKey] = badgeString.split('#');
     
-    // Map Rarity to Styles
+    // Rarity Style Map
     const rarityMap = {
       common: { color: 'text-zinc-400', border: 'border-zinc-500/30', label: 'Common' },
       rare: { color: 'text-blue-400', border: 'border-blue-500/50', label: 'Rare' },
@@ -2472,6 +2404,7 @@ const AwardWall = ({ members, data }) => {
             list.push({ user: m.name, rawBadge: a }); 
         }); 
     });
+    // Sort by user name or rarity if desired; currently follows team order
     return list;
   }, [members, data]);
 
@@ -2481,22 +2414,25 @@ const AwardWall = ({ members, data }) => {
         {all.map((item, i) => {
           const { name, color, border, rarity } = renderBadge(item.rawBadge);
           return (
-            <div key={i} style={{ animationDelay: `${i * 50}ms` }} className={cn(
-                "animate-fade-in flex items-center gap-2 bg-black/40 border pl-2 pr-3 py-1.5 rounded-full hover:bg-white/5 transition-colors cursor-default group",
-                border
+            <div key={i} className={cn(
+                "animate-fade-in flex items-center gap-2 bg-black/40 border pl-2 pr-3 py-1.5 rounded-full",
+                border // Applies rarity-colored border
             )}>
-                {/* Use Helper for Icon */}
-                <div className={cn("group-hover:rotate-12 transition-transform", color)}>
-                    {getBadgeIcon(rarity, 12)}
+                <div className="group-hover:rotate-12 transition-transform">
+                    {getBadgeIcon(rarity, 14)} 
                 </div>
                 <span className="text-xs font-bold text-zinc-300">{item.user}</span>
-                <span className={cn("text-[10px] uppercase tracking-wide border-l border-white/10 pl-2 ml-1 font-bold", color)}>
+                <span className={cn("text-[10px] uppercase tracking-wide border-l border-white/10 pl-2 ml-1 font-black", color)}>
                    {name}
                 </span>
             </div>
           );
         })}
-        {all.length === 0 && <div className="w-full text-center py-8 text-zinc-600 italic">No distinctions awarded yet.</div>}
+        {all.length === 0 && (
+          <div className="w-full text-center py-8 text-zinc-600 italic">
+            No distinctions awarded yet.
+          </div>
+        )}
       </div>
     </Card>
   );
