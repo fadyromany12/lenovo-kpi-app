@@ -35,7 +35,8 @@ import {
   ArrowUpRight, Eye, Edit3, Shield, LayoutGrid, Mail, Upload, FileSpreadsheet, 
   TrendingUp, TrendingDown, Target, Lock, ChevronRight, BarChart3, Calculator,
   Info, Zap, Sparkles, Download, Trash2, UserMinus, Trash, Edit2, BookOpen, 
-  Heart, MessageSquare, Send, X // NEW: Added icons for Chat
+  Heart, MessageSquare, Send, X, 
+  Award, Star // <--- NEW: Added for Rarity Icons
 } from 'lucide-react';
 
 // --- STYLES & ANIMATIONS ---
@@ -382,6 +383,16 @@ const getAgentRank = (level) => {
   return { name: 'Bronze', color: 'text-amber-700', border: 'border-amber-700/50', bg: 'bg-orange-950/30' };
 };
 
+const getBadgeIcon = (rarity, size = 14, className) => {
+  const cn = className || "";
+  switch (rarity) {
+    case 'mythic': return <Crown size={size} className={cn} />;
+    case 'legendary': return <Trophy size={size} className={cn} />;
+    case 'epic': return <Award size={size} className={cn} />;
+    case 'rare': return <Star size={size} className={cn} />;
+    default: return <Medal size={size} className={cn} />;
+  }
+};
 
 
 // --- CONTEXTS ---
@@ -1289,82 +1300,209 @@ const TeamDashboard = () => {
     if (activeTeam) setNewName(activeTeam.name);
   }, [activeTeam]);
 
-  // --- NEW: GENERATE WHOLE TEAM PDF ---
+  // --- NEW: ADVANCED TEAM PDF REPORT ---
   const generateTeamReport = () => {
     const doc = new jsPDF();
-    const today = new Date().toLocaleDateString();
-    
-    // 1. Cover Page / Summary Table
-    doc.setFontSize(22);
-    doc.setTextColor(226, 35, 26); // #E2231A
-    doc.setFont("helvetica", "bold");
-    doc.text("TEAM PERFORMANCE REPORT", 105, 20, { align: 'center' });
-    
-    doc.setFontSize(12);
-    doc.setTextColor(0);
-    doc.text(`Team: ${activeTeam.name}`, 14, 35);
-    doc.text(`Generated: ${today}`, 14, 42);
+    const themeRed = [226, 35, 26]; // #E2231A
+    const themeDark = [20, 20, 22]; // Dark background
 
-    // Prepare Summary Data
-    const summaryData = agents.map((m, idx) => {
-        const total = calculateTotalScore(performance[m.id], activeTeam.kpis);
-        return [idx + 1, m.name, m.email, `${total.toFixed(1)}%`];
+    // --- HELPER: Draw Header on a Page ---
+    const drawHeader = (title, subLeft, subRight) => {
+      // Background
+      doc.setFillColor(...themeDark);
+      doc.rect(0, 0, 210, 40, 'F');
+      
+      // Title
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(22);
+      doc.setFont("helvetica", "bold");
+      doc.text(title, 14, 20);
+      
+      // Subtitles
+      doc.setFontSize(10);
+      doc.setTextColor(200, 200, 200);
+      doc.text(subLeft.toUpperCase(), 14, 30);
+      doc.text(subRight.toUpperCase(), 14, 35);
+
+      // Red Strip
+      doc.setFillColor(...themeRed);
+      doc.rect(0, 38, 210, 2, 'F');
+    };
+
+    // --- CALCULATE TEAM STATS ---
+    const teamKpis = activeTeam.kpis || [];
+    let teamTotalScoreSum = 0;
+    
+    // Initialize Team KPI aggregators
+    const teamKpiStats = {};
+    teamKpis.forEach(k => { teamKpiStats[k.id] = { sum: 0, count: 0, weight: k.weight, name: k.name, target: k.target }; });
+
+    // Iterate Agents
+    const agentData = agents.map(agent => {
+        const p = performance[agent.id] || { actuals: {}, awards: [] };
+        let agentTotal = 0;
+        
+        const kpiDetails = teamKpis.map(k => {
+           const val = p.actuals?.[k.id];
+           const score = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
+           agentTotal += score;
+
+           // Add to Team Stats
+           if(val !== undefined && val !== null && val !== '') {
+               const numVal = parseFloat(val);
+               if(!isNaN(numVal)) {
+                   teamKpiStats[k.id].sum += numVal;
+                   teamKpiStats[k.id].count++;
+               } else if (k.type === 'binary') {
+                   // Count pass rate? For now just skip non-numeric binary in average calculation or handle specifically
+                   // Simple binary handling: Pass = 1, Fail = 0
+                   if(val === 'pass') { teamKpiStats[k.id].sum += 1; teamKpiStats[k.id].count++; }
+                   else if(val === 'fail') { teamKpiStats[k.id].count++; }
+               }
+           }
+           
+           return { ...k, val, score };
+        });
+
+        teamTotalScoreSum += agentTotal;
+        return { ...agent, total: agentTotal, kpiDetails, awards: p.awards || [] };
+    }).sort((a,b) => b.total - a.total);
+
+    const teamAverageScore = agents.length > 0 ? (teamTotalScoreSum / agents.length) : 0;
+
+    // --- PAGE 1: TEAM OVERVIEW ---
+    drawHeader("TEAM PERFORMANCE REPORT", `UNIT: ${activeTeam.name}`, `DATE: ${new Date().toLocaleDateString()}`);
+
+    // Team Score Badge
+    doc.setFillColor(...(teamAverageScore >= 100 ? themeRed : themeDark));
+    doc.roundedRect(14, 50, 40, 25, 2, 2, 'F');
+    doc.setTextColor(255);
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.text(`${teamAverageScore.toFixed(1)}%`, 34, 62, { align: 'center' });
+    doc.setFontSize(8);
+    doc.text("TEAM SCORE", 34, 70, { align: 'center' });
+
+    // Team Meta
+    doc.setTextColor(0);
+    doc.setFontSize(10);
+    doc.text(`Manager: ${profile.name}`, 65, 55);
+    doc.text(`Active Agents: ${agents.length}`, 65, 62);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 65, 69);
+
+    // Section: Team KPI Breakdown
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...themeRed);
+    doc.text("TEAM METRICS BREAKDOWN", 14, 90);
+
+    const kpiRows = Object.values(teamKpiStats).map(stat => {
+        const avgActual = stat.count > 0 ? (stat.sum / stat.count) : 0;
+        // Re-calculate weighted score based on average actual
+        // Note: This is an approximation. True average score might differ slightly from score of averages.
+        // We will display Average Actual.
+        return [
+            stat.name,
+            stat.target,
+            stat.count > 0 ? (Number.isInteger(avgActual) ? avgActual : avgActual.toFixed(1)) : '-',
+            `${stat.weight}%`
+        ];
     });
 
     autoTable(doc, {
-        startY: 50,
-        head: [['Rank', 'Agent Name', 'Email', 'Score']],
-        body: summaryData,
+        startY: 95,
+        head: [['Metric', 'Target', 'Avg Actual', 'Weight']],
+        body: kpiRows,
         theme: 'striped',
-        headStyles: { fillColor: [20, 20, 22], textColor: 255 },
-        styles: { fontSize: 10 },
-        columnStyles: { 3: { fontStyle: 'bold', textColor: [226, 35, 26] } }
+        headStyles: { fillColor: themeDark, textColor: 255 },
+        styles: { fontSize: 10 }
     });
 
-    // 2. Individual Pages Loop
-    agents.forEach((agent) => {
+    // Section: Roster Summary
+    const rosterY = doc.lastAutoTable.finalY + 15;
+    doc.setFontSize(12);
+    doc.setTextColor(...themeRed);
+    doc.text("AGENT ROSTER RANKING", 14, rosterY);
+
+    const rosterRows = agentData.map((a, i) => [
+        `#${i+1}`, 
+        a.name, 
+        a.email, 
+        `${a.total.toFixed(1)}%`
+    ]);
+
+    autoTable(doc, {
+        startY: rosterY + 5,
+        head: [['Rank', 'Agent Name', 'Email', 'Score']],
+        body: rosterRows,
+        theme: 'grid',
+        headStyles: { fillColor: themeRed, textColor: 255 },
+        columnStyles: { 3: { fontStyle: 'bold' } },
+        styles: { fontSize: 9 }
+    });
+
+
+    // --- INDIVIDUAL PAGES LOOP ---
+    agentData.forEach(agent => {
         doc.addPage();
         
-        // Background
-        doc.setFillColor(20, 20, 22);
-        doc.rect(0, 0, 210, 30, 'F');
-        
+        // Use the exact header style from Individual Report
+        drawHeader("PERFORMANCE SCORECARD", `AGENT: ${agent.name}`, `UNIT: ${activeTeam.name}`);
+
+        // Agent Identity & Score Box (Replicating generateAgentReport layout)
+        // Score Badge (Right Side)
+        doc.setFillColor(...(agent.total >= 100 ? themeRed : themeDark));
+        doc.roundedRect(160, 48, 35, 20, 2, 2, 'F');
         doc.setTextColor(255);
         doc.setFontSize(16);
-        doc.text(agent.name.toUpperCase(), 14, 12);
-        doc.setFontSize(10);
-        doc.setTextColor(180, 180, 180);
-        doc.text(`Individual Scorecard`, 14, 20);
+        doc.setFont("helvetica", "bold");
+        doc.text(`${agent.total.toFixed(1)}%`, 177.5, 61, { align: 'center' });
+        doc.setFontSize(7);
+        doc.text("FINAL SCORE", 177.5, 53, { align: 'center' });
 
-        // Stats
-        const p = performance[agent.id] || { actuals: {} };
-        let totalScore = 0;
-        const kpiRows = activeTeam.kpis.map(k => {
-           const val = p.actuals?.[k.id];
-           const weighted = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
-           totalScore += weighted;
-           return [k.name, k.target, val || '-', `${k.weight}%`, weighted.toFixed(1)];
-        });
+        // Awards Text
+        if (agent.awards.length > 0) {
+            doc.setFontSize(10);
+            doc.setTextColor(...themeRed);
+            doc.text("DISTINCTIONS:", 14, 55);
+            doc.setTextColor(60, 60, 60);
+            // Clean badge names for PDF
+            const cleanAwards = agent.awards.map(a => a.split('#')[0]).join("  •  ");
+            doc.text(cleanAwards, 45, 55);
+        }
 
-        // Score Box
-        doc.setFillColor(226, 35, 26);
-        doc.roundedRect(160, 5, 35, 20, 2, 2, 'F');
-        doc.setTextColor(255);
-        doc.setFontSize(14);
-        doc.text(`${totalScore.toFixed(1)}%`, 177.5, 18, { align: 'center' });
+        // Detailed KPI Table for this Agent
+        const agentKpiRows = agent.kpiDetails.map(k => [
+            k.name,
+            k.category || 'Core',
+            k.target,
+            k.val || '-',
+            `${k.weight}%`,
+            `${k.score.toFixed(1)}`
+        ]);
 
-        // Table
         autoTable(doc, {
-            startY: 40,
-            head: [['KPI', 'Target', 'Actual', 'Weight', 'Points']],
-            body: kpiRows,
+            startY: 70,
+            head: [['Metric', 'Category', 'Target', 'Actual', 'Weight', 'Score']],
+            body: agentKpiRows,
             theme: 'grid',
-            headStyles: { fillColor: [226, 35, 26] },
-            foot: [['', '', '', 'TOTAL', totalScore.toFixed(1)]]
+            headStyles: { fillColor: themeDark, textColor: 255, fontStyle: 'bold' },
+            columnStyles: {
+                0: { fontStyle: 'bold' },
+                5: { fontStyle: 'bold', textColor: themeRed }
+            },
+            styles: { fontSize: 9, cellPadding: 3 },
+            foot: [['', '', '', '', 'TOTAL', agent.total.toFixed(1)]],
+            footStyles: { fillColor: [240, 240, 240], textColor: 0, fontStyle: 'bold' }
         });
+
+        // Footer
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        doc.text("CONFIDENTIAL INTERNAL DOCUMENT", 105, 280, { align: 'center' });
     });
 
-    doc.save(`Team_Report_${activeTeam.name}_${today}.pdf`);
+    doc.save(`Team_Report_${activeTeam.name}_${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
   const handleRename = async () => {
@@ -1480,7 +1618,7 @@ const TeamDashboard = () => {
         <div className="flex gap-3">
           {isManager && (
             <>
-              {/* NEW EXPORT BUTTON */}
+              {/* UPDATED EXPORT BUTTON */}
               <Button variant="secondary" onClick={generateTeamReport} title="Export Full Team PDF">
                  <FileSpreadsheet size={16} /> Team Report
               </Button>
@@ -1697,8 +1835,6 @@ const DebouncedInput = ({ value, onSave, placeholder }) => {
 };
 
 
-// REPLACE the existing PerformanceMatrix component with this version
-
 const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList, onRemoveMember }) => { 
   const { showToast } = useContext(ToastContext);
   
@@ -1817,10 +1953,10 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
 
   // Helper: Parse Rarity
   const renderBadge = (badgeString) => {
-    if (!badgeString.includes('#')) return { name: badgeString, ...RARITY.common };
+    if (!badgeString.includes('#')) return { name: badgeString, rarity: 'common', ...RARITY.common };
     const [name, rarityKey] = badgeString.split('#');
     const style = RARITY[rarityKey] || RARITY.common;
-    return { name, ...style };
+    return { name, rarity: rarityKey, ...style };
   };
 
   const handleOpenRecognition = (e, row) => {
@@ -1901,8 +2037,12 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                         {/* Render Badges in Table */}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {row.awards.map(a => {
-                            const { color, name } = renderBadge(a);
-                            return <span key={a} title={name} className={cn("animate-pulse", color)}><Medal size={10}/></span>
+                            const { color, name, rarity } = renderBadge(a);
+                            return (
+                                <span key={a} title={name} className={cn("animate-pulse", color)}>
+                                    {getBadgeIcon(rarity, 10)}
+                                </span>
+                            );
                           })}
                         </div>
                       </div>
@@ -2009,7 +2149,7 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
             <div className="flex-1 overflow-y-auto p-3 bg-black/50">
               <div className="grid grid-cols-2 gap-2">
                 {awardsList.map(badgeStr => {
-                  const { name, color, border } = renderBadge(badgeStr);
+                  const { name, color, border, rarity } = renderBadge(badgeStr);
                   const isActive = recognitionUI.currentAwards.includes(badgeStr);
                   return (
                     <div key={badgeStr} className="relative group">
@@ -2022,7 +2162,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                               : `bg-white/5 hover:bg-white/10 ${border} ${color}`
                           )}
                         >
-                          <Medal size={20} className={isActive ? "text-white" : color} />
+                          {/* Use Helper for Icon */}
+                          {getBadgeIcon(rarity, 20, isActive ? "text-white" : color)}
                           <span className="text-[10px] font-bold uppercase text-center truncate w-full">{name}</span>
                         </button>
                         <button 
@@ -2060,7 +2201,8 @@ const PerformanceMatrix = ({ members, kpis, data, isManager, teamId, awardsList,
                         )}
                         title={r.label}
                       >
-                         {r.label[0]}
+                         {/* Render specific icon for the selector button */}
+                         {getBadgeIcon(rKey, 10)}
                       </button>
                     )
                  })}
@@ -2307,20 +2449,20 @@ const Leaderboard = ({ members, kpis, data }) => {
 const AwardWall = ({ members, data }) => {
   // Parsing Helper (same as PerformanceMatrix)
   const renderBadge = (badgeString) => {
-    if (!badgeString.includes('#')) return { name: badgeString, color: 'text-zinc-400', border: 'border-zinc-500/30' };
+    if (!badgeString.includes('#')) return { name: badgeString, color: 'text-zinc-400', border: 'border-zinc-500/30', rarity: 'common' };
     const [name, rarityKey] = badgeString.split('#');
     
     // Map Rarity to Styles
     const rarityMap = {
-      common: { color: 'text-zinc-400', border: 'border-zinc-500/30' },
-      rare: { color: 'text-blue-400', border: 'border-blue-500/50' },
-      epic: { color: 'text-purple-400', border: 'border-purple-500/50' },
-      legendary: { color: 'text-yellow-400', border: 'border-yellow-500/50' },
-      mythic: { color: 'text-red-500', border: 'border-red-600' }
+      common: { color: 'text-zinc-400', border: 'border-zinc-500/30', label: 'Common' },
+      rare: { color: 'text-blue-400', border: 'border-blue-500/50', label: 'Rare' },
+      epic: { color: 'text-purple-400', border: 'border-purple-500/50', label: 'Epic' },
+      legendary: { color: 'text-yellow-400', border: 'border-yellow-500/50', label: 'Legendary' },
+      mythic: { color: 'text-red-500', border: 'border-red-600', label: 'Mythic' }
     };
 
     const style = rarityMap[rarityKey] || rarityMap.common;
-    return { name, ...style };
+    return { name, rarity: rarityKey, ...style };
   };
 
   const all = useMemo(() => {
@@ -2337,13 +2479,16 @@ const AwardWall = ({ members, data }) => {
     <Card title="Hall of Fame" icon={Sparkles} className="h-full">
       <div className="flex flex-wrap gap-2 content-start">
         {all.map((item, i) => {
-          const { name, color, border } = renderBadge(item.rawBadge);
+          const { name, color, border, rarity } = renderBadge(item.rawBadge);
           return (
             <div key={i} style={{ animationDelay: `${i * 50}ms` }} className={cn(
                 "animate-fade-in flex items-center gap-2 bg-black/40 border pl-2 pr-3 py-1.5 rounded-full hover:bg-white/5 transition-colors cursor-default group",
                 border
             )}>
-                <Medal size={12} className={cn("group-hover:rotate-12 transition-transform", color)} />
+                {/* Use Helper for Icon */}
+                <div className={cn("group-hover:rotate-12 transition-transform", color)}>
+                    {getBadgeIcon(rarity, 12)}
+                </div>
                 <span className="text-xs font-bold text-zinc-300">{item.user}</span>
                 <span className={cn("text-[10px] uppercase tracking-wide border-l border-white/10 pl-2 ml-1 font-bold", color)}>
                    {name}
