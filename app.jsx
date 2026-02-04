@@ -285,7 +285,7 @@ const DEFAULT_BADGE_DEFINITIONS = {
   "Client Savior": "Prevented a major cancellation/churn",
   "Grandmaster": "Rank #1 in every metric for the month",
   // Legendary
-  "Target Crusher": "Hit 150%+ of Target",
+  "Target Crusher": "Hit 100%+ of Target",
   "Quality King": "Best Quality Audit Score in Team",
   "Speed Demon": "Fastest Average Handling Time",
   "Sales Titan": "Highest Revenue for the Month",
@@ -359,12 +359,12 @@ const calculateScore = (actual, target, direction, weight, type = 'value', steps
     scorePct = (act / tgt) * 100;
   } else {
     // Lower is better (e.g., AHT)
-    if (act === 0) scorePct = 150; // Perfect score for 0 errors/time
+    if (act === 0) scorePct = 100; // Perfect score for 0 errors/time
     else scorePct = (tgt / act) * 100;
   }
 
-  // Cap Performance at 150%
-  return (Math.min(scorePct, 150) / 100) * w;
+  // Cap Performance at 100%
+  return (Math.min(scorePct, 100) / 100) * w;
 };
 
 // NEW: Single Source of Truth for Total Score
@@ -1278,7 +1278,7 @@ const TrendChart = ({ data, kpis }) => {
     return { label: month.id, value: avg };
   }).sort((a, b) => a.label.localeCompare(b.label)) : [];
 
-  const maxVal = 150; 
+  const maxVal = 100; 
 
   return (
     <Card 
@@ -1332,14 +1332,21 @@ const TeamDashboard = () => {
   
   const activeTeam = teams.find(t => t.id === activeTeamId);
   const isSuperUser = profile.role === 'super_user';
-  // Updated isManager to check if the user is the actual manager OR a super user
+  
+  // Logic: You are a manager if you are the designated manager of this group OR a super user
   const isManager = (profile.role === 'manager' && profile.groupId === activeTeamId) || isSuperUser;
-  // Updated isObserver so Super Users are NEVER observers (they are always managers)
+  
+  // Logic: You are an observer if you are not a super user, not the manager, and not in the group
   const isObserver = isSuperUser ? false : (!isManager && profile.groupId !== activeTeamId);
 
+  // --- FIX 1 & 2 START ---
+  // We only filter by role 'agent'. 
+  // 1. This ensures Agents see themselves (Fixes "User can't see himself").
+  // 2. Managers/SuperUsers have role 'manager'/'super_user', so they are automatically excluded (Fixes "Manager hidden").
   const agents = useMemo(() => {
-    return members.filter(m => m.role === 'agent' && m.id !== profile.id);
-  }, [members, profile.id]);
+    return members.filter(m => m.role === 'agent');
+  }, [members]);
+  // --- FIX END ---
 
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState(''); 
@@ -1348,44 +1355,32 @@ const TeamDashboard = () => {
     if (activeTeam) setNewName(activeTeam.name);
   }, [activeTeam]);
 
-  // --- NEW: ADVANCED TEAM PDF REPORT ---
+  // --- PDF GENERATOR (Kept same as before) ---
   const generateTeamReport = () => {
     const doc = new jsPDF();
-    const themeRed = [226, 35, 26]; // #E2231A
-    const themeDark = [20, 20, 22]; // Dark background
+    const themeRed = [226, 35, 26]; 
+    const themeDark = [20, 20, 22]; 
 
-    // --- HELPER: Draw Header on a Page ---
     const drawHeader = (title, subLeft, subRight) => {
-      // Background
       doc.setFillColor(...themeDark);
       doc.rect(0, 0, 210, 40, 'F');
-      
-      // Title
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(22);
       doc.setFont("helvetica", "bold");
       doc.text(title, 14, 20);
-      
-      // Subtitles
       doc.setFontSize(10);
       doc.setTextColor(200, 200, 200);
       doc.text(subLeft.toUpperCase(), 14, 30);
       doc.text(subRight.toUpperCase(), 14, 35);
-
-      // Red Strip
       doc.setFillColor(...themeRed);
       doc.rect(0, 38, 210, 2, 'F');
     };
 
-    // --- CALCULATE TEAM STATS ---
     const teamKpis = activeTeam.kpis || [];
     let teamTotalScoreSum = 0;
-    
-    // Initialize Team KPI aggregators
     const teamKpiStats = {};
     teamKpis.forEach(k => { teamKpiStats[k.id] = { sum: 0, count: 0, weight: k.weight, name: k.name, target: k.target }; });
 
-    // Iterate Agents
     const agentData = agents.map(agent => {
         const p = performance[agent.id] || { actuals: {}, awards: [] };
         let agentTotal = 0;
@@ -1395,15 +1390,12 @@ const TeamDashboard = () => {
            const score = calculateScore(val, k.target, k.direction, k.weight, k.type, k.steps);
            agentTotal += score;
 
-           // Add to Team Stats
            if(val !== undefined && val !== null && val !== '') {
                const numVal = parseFloat(val);
                if(!isNaN(numVal)) {
                    teamKpiStats[k.id].sum += numVal;
                    teamKpiStats[k.id].count++;
                } else if (k.type === 'binary') {
-                   // Count pass rate? For now just skip non-numeric binary in average calculation or handle specifically
-                   // Simple binary handling: Pass = 1, Fail = 0
                    if(val === 'pass') { teamKpiStats[k.id].sum += 1; teamKpiStats[k.id].count++; }
                    else if(val === 'fail') { teamKpiStats[k.id].count++; }
                }
@@ -1418,10 +1410,8 @@ const TeamDashboard = () => {
 
     const teamAverageScore = agents.length > 0 ? (teamTotalScoreSum / agents.length) : 0;
 
-    // --- PAGE 1: TEAM OVERVIEW ---
     drawHeader("TEAM PERFORMANCE REPORT", `UNIT: ${activeTeam.name}`, `DATE: ${new Date().toLocaleDateString()}`);
 
-    // Team Score Badge
     doc.setFillColor(...(teamAverageScore >= 100 ? themeRed : themeDark));
     doc.roundedRect(14, 50, 40, 25, 2, 2, 'F');
     doc.setTextColor(255);
@@ -1431,14 +1421,12 @@ const TeamDashboard = () => {
     doc.setFontSize(8);
     doc.text("TEAM SCORE", 34, 70, { align: 'center' });
 
-    // Team Meta
     doc.setTextColor(0);
     doc.setFontSize(10);
     doc.text(`Manager: ${profile.name}`, 65, 55);
     doc.text(`Active Agents: ${agents.length}`, 65, 62);
     doc.text(`Generated: ${new Date().toLocaleString()}`, 65, 69);
 
-    // Section: Team KPI Breakdown
     doc.setFontSize(12);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(...themeRed);
@@ -1446,9 +1434,6 @@ const TeamDashboard = () => {
 
     const kpiRows = Object.values(teamKpiStats).map(stat => {
         const avgActual = stat.count > 0 ? (stat.sum / stat.count) : 0;
-        // Re-calculate weighted score based on average actual
-        // Note: This is an approximation. True average score might differ slightly from score of averages.
-        // We will display Average Actual.
         return [
             stat.name,
             stat.target,
@@ -1466,7 +1451,6 @@ const TeamDashboard = () => {
         styles: { fontSize: 10 }
     });
 
-    // Section: Roster Summary
     const rosterY = doc.lastAutoTable.finalY + 15;
     doc.setFontSize(12);
     doc.setTextColor(...themeRed);
@@ -1489,16 +1473,10 @@ const TeamDashboard = () => {
         styles: { fontSize: 9 }
     });
 
-
-    // --- INDIVIDUAL PAGES LOOP ---
     agentData.forEach(agent => {
         doc.addPage();
-        
-        // Use the exact header style from Individual Report
         drawHeader("PERFORMANCE SCORECARD", `AGENT: ${agent.name}`, `UNIT: ${activeTeam.name}`);
 
-        // Agent Identity & Score Box (Replicating generateAgentReport layout)
-        // Score Badge (Right Side)
         doc.setFillColor(...(agent.total >= 100 ? themeRed : themeDark));
         doc.roundedRect(160, 48, 35, 20, 2, 2, 'F');
         doc.setTextColor(255);
@@ -1508,18 +1486,15 @@ const TeamDashboard = () => {
         doc.setFontSize(7);
         doc.text("FINAL SCORE", 177.5, 53, { align: 'center' });
 
-        // Awards Text
         if (agent.awards.length > 0) {
             doc.setFontSize(10);
             doc.setTextColor(...themeRed);
             doc.text("DISTINCTIONS:", 14, 55);
             doc.setTextColor(60, 60, 60);
-            // Clean badge names for PDF
             const cleanAwards = agent.awards.map(a => a.split('#')[0]).join("  •  ");
             doc.text(cleanAwards, 45, 55);
         }
 
-        // Detailed KPI Table for this Agent
         const agentKpiRows = agent.kpiDetails.map(k => [
             k.name,
             k.category || 'Core',
@@ -1544,7 +1519,6 @@ const TeamDashboard = () => {
             footStyles: { fillColor: [240, 240, 240], textColor: 0, fontStyle: 'bold' }
         });
 
-        // Footer
         doc.setFontSize(8);
         doc.setTextColor(150, 150, 150);
         doc.text("CONFIDENTIAL INTERNAL DOCUMENT", 105, 280, { align: 'center' });
@@ -1666,7 +1640,6 @@ const TeamDashboard = () => {
         <div className="flex gap-3">
           {isManager && (
             <>
-              {/* UPDATED EXPORT BUTTON */}
               <Button variant="secondary" onClick={generateTeamReport} title="Export Full Team PDF">
                  <FileSpreadsheet size={16} /> Team Report
               </Button>
@@ -1739,7 +1712,7 @@ const TeamDashboard = () => {
             isManager={isManager} 
             teamId={activeTeam.id} 
             awardsList={activeTeam.awards || []} 
-            badgeDefinitions={activeTeam.badgeDefinitions || {}} // PASS PROP
+            badgeDefinitions={activeTeam.badgeDefinitions || {}} 
             onRemoveMember={handleRemoveMember} 
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -1747,7 +1720,7 @@ const TeamDashboard = () => {
             <AwardWall 
                 members={agents} 
                 data={performance} 
-                badgeDefinitions={activeTeam.badgeDefinitions || {}} // PASS PROP
+                badgeDefinitions={activeTeam.badgeDefinitions || {}} 
             />
           </div>
         </div>
